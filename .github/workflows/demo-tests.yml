@@ -1,0 +1,23 @@
+name: Demo tests
+
+on:
+  pull_request:
+    paths: ["demo/**", ".github/workflows/demo-tests.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  demo-tests:
+    name: demo-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pydantic httpx
+      - run: python demo/test_last_review.py
