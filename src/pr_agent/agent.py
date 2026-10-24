@@ -288,7 +288,9 @@ def _tried(ctx: ReviewContext) -> list[str]:
 def _failing_paths(ci: CIReport | None) -> set[str]:
     if ci is None:
         return set()
-    return {a.path for c in ci.checks if c.state == "failed" for a in c.annotations if a.path}
+    # Only failure-level notes: a warning on a file (a deprecation, a lint hint) doesn't say the check failed there.
+    return {a.path for c in ci.checks if c.state == "failed" for a in c.annotations
+            if a.path and a.level == "failure"}
 
 
 def _finalize(review: ModelReview, ctx: ReviewContext, previous: PreviousReview | None, tracer: Tracer) -> ReviewResult:

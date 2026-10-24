@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from pr_agent.agent import Tracer, run_review
+from pr_agent.agent import Tracer, _failing_paths, run_review
 from pr_agent.ci import build_ci_report, check_state, ci_report_from_fixture, fetch_ci_report, overall_state
 from pr_agent.claude_client import FakeModel, ScriptedModel, text_response, tool_response
 from pr_agent.cli import EXIT_OK, main
@@ -83,6 +83,32 @@ def test_single_failed_check_with_annotation():
     body = "\n".join(render_review_comment(ReviewResult(repo="o/r", pr_number=1, head_sha=SHA, status="completed",
                                                         summary="s", ci=ci)).splitlines())
     assert "❌ unit-tests: Failed — AttributeError" in body and "Likely cause: not determined" in body
+
+
+def test_failed_check_shows_the_code_failure_not_runner_warnings():
+    # The annotations GitHub returned, in this order, for the failing demo-tests job on PR #6.
+    notes = [
+        {"path": ".github", "start_line": 2, "annotation_level": "warning", "message": "Node.js 20 is deprecated."},
+        {"path": ".github", "start_line": 13, "annotation_level": "failure",
+         "message": "Process completed with exit code 1."},
+        {"path": "demo/last_review.py", "start_line": 13, "annotation_level": "failure",
+         "message": "AttributeError: 'NoneType' object has no attribute 'head_sha'"},
+        {"path": ".github", "start_line": 1, "annotation_level": "notice", "message": "ubuntu-latest will migrate."},
+    ]
+    ci = report([raw(1, "demo-tests", conclusion="failure")], {1: notes})
+    assert [(a.path, a.level) for a in ci.checks[0].annotations][:2] == [
+        ("demo/last_review.py", "failure"), (".github", "failure")]
+    body = render_review_comment(ReviewResult(repo="o/r", pr_number=1, head_sha=SHA, status="completed",
+                                              summary="s", ci=ci))
+    assert "demo-tests: Failed — AttributeError" in body and "Node.js" not in body
+
+
+def test_warning_annotations_are_not_failure_locations():
+    ci = report([raw(1, conclusion="failure")], {1: [
+        {"path": "app/auth.py", "start_line": 3, "annotation_level": "warning", "message": "deprecated call"},
+        {"path": "tests/test_auth.py", "start_line": 9, "annotation_level": "failure", "message": "AssertionError"},
+    ]})
+    assert _failing_paths(ci) == {"tests/test_auth.py"}  # a warning can't block resolving or force escalation
 
 
 def test_failed_passed_and_running_checks_are_distinct():

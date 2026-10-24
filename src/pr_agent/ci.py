@@ -15,6 +15,8 @@ from .schemas import CheckAnnotation, CheckRun, CIReport
 PASSED = {"success"}
 NEUTRAL = {"neutral", "skipped", "cancelled", "stale"}  # not a code failure, not a pass either
 FAILED = {"failure", "timed_out", "action_required", "startup_failure"}
+ANNOTATION_RANK = {"failure": 0, "warning": 1, "notice": 2}
+RUNNER_PATH = ".github"  # path GitHub puts on its own job notes ("Process completed with exit code 1", deprecations)
 
 
 def check_state(status: str | None, conclusion: str | None) -> str:
@@ -38,6 +40,12 @@ def overall_state(checks: list[CheckRun]) -> str:
     return "not_found"  # no checks, or only skipped/neutral ones: nothing that shows the code passes
 
 
+def _annotation_priority(a: dict) -> tuple[int, bool]:
+    """Failures first and, among them, ones pointing at a real file before the runner's generic job notes.
+    GitHub returns annotations in creation order, which often starts with runner warnings."""
+    return ANNOTATION_RANK.get(a.get("annotation_level") or "failure", 3), a.get("path") in (None, "", RUNNER_PATH)
+
+
 def _safe_url(url: object) -> str | None:
     return url if isinstance(url, str) and url.startswith("https://github.com/") else None
 
@@ -59,7 +67,7 @@ def build_ci_report(head_sha: str, raw_runs: list[dict], total_count: int, annot
         output = raw.get("output") or {}
         summary = " — ".join(s.strip() for s in (output.get("title"), output.get("summary")) if s and s.strip())
         truncated = len(summary) > limits.max_check_summary_chars
-        notes = annotations.get(raw.get("id"), [])
+        notes = sorted(annotations.get(raw.get("id"), []), key=_annotation_priority)
         checks.append(CheckRun(
             id=int(raw.get("id") or 0),
             name=name,
