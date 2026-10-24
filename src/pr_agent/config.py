@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_SELF_CHECK_NAME = "PR Sentinel review"  # must match the job `name:` in .github/workflows/pr-agent.yml
 # Models that accept the server-side refusal fallback (`fallbacks: "default"`).
 FALLBACK_MODELS = {"claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", "claude-fable-5-1"}
 
@@ -36,6 +37,14 @@ class Limits:
     max_identical_tool_requests: int = 1
     max_bad_tool_calls: int = 3
     max_findings: int = 8
+    # Milestone 2: CI evidence and related-file context (all also count against max_tool_calls)
+    max_checks: int = 30
+    max_annotated_checks: int = 5
+    max_annotations: int = 20
+    max_check_summary_chars: int = 2000
+    max_related_files: int = 8
+    max_context_reads: int = 4
+    max_tool_fetch_failures: int = 2
 
     @classmethod
     def from_env(cls) -> "Limits":
@@ -49,6 +58,7 @@ class Settings:
     effort: str = "medium"
     use_fallbacks: bool = True
     bot_login: str | None = None  # expected author of our PR comment; resolved at runtime if unset
+    self_check_name: str = DEFAULT_SELF_CHECK_NAME  # our own Actions check, never treated as a code failure
     limits: Limits = field(default_factory=Limits)
 
     @classmethod
@@ -63,6 +73,7 @@ class Settings:
             effort=effort,
             use_fallbacks=fallbacks_env not in {"off", "0", "false"} and model in FALLBACK_MODELS,
             bot_login=os.environ.get("PR_SENTINEL_BOT_LOGIN", "").strip() or None,
+            self_check_name=os.environ.get("PR_SENTINEL_SELF_CHECK", "").strip() or DEFAULT_SELF_CHECK_NAME,
             limits=Limits.from_env(),
         )
 

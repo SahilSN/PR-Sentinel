@@ -45,6 +45,22 @@ class FakeGitHub:
             if content is None or request.url.params.get("ref") != self.fixture["head_sha"]:
                 return httpx.Response(404, json={"message": "Not Found"})
             return httpx.Response(200, content=content.encode())
+        ci = self.fixture.get("ci") or {}
+        if request.method == "GET" and path == f"/repos/{repo}/commits/{self.fixture['head_sha']}/check-runs":
+            if ci.get("error"):
+                return httpx.Response(ci["error"]["status"], json={"message": ci["error"]["message"]})
+            per_page, page = int(request.url.params["per_page"]), int(request.url.params["page"])
+            runs = ci.get("check_runs", [])
+            return httpx.Response(200, json={"total_count": ci.get("total_count", len(runs)),
+                                             "check_runs": runs[(page - 1) * per_page: page * per_page]})
+        if request.method == "GET" and path.startswith(f"/repos/{repo}/check-runs/") and path.endswith("/annotations"):
+            run_id = path.split("/")[-2]
+            return httpx.Response(200, json=(ci.get("annotations") or {}).get(run_id, []))
+        if request.method == "GET" and path == f"/repos/{repo}/git/trees/{self.fixture['head_sha']}":
+            contents = self.fixture.get("file_contents", {})
+            tree = [{"path": p, "type": "blob", "mode": "100644", "size": len(c)} for p, c in contents.items()]
+            tree += self.fixture.get("extra_tree_entries", [])
+            return httpx.Response(200, json={"tree": tree, "truncated": False})
         if request.method == "GET" and path == "/user":
             return httpx.Response(403, json={"message": "Resource not accessible by integration"})
         if path == f"/repos/{repo}/issues/{pr}/comments":

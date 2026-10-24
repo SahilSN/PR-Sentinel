@@ -1,0 +1,49 @@
+{
+  "repo": "demo/agent-playground",
+  "pr_number": 22,
+  "title": "Add slugify helper (CI running)",
+  "base_sha": "base123",
+  "head_sha": "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+  "changed_files": [
+    {
+      "path": "app/text.py",
+      "status": "added",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,4 @@\n+import re\n+\n+def slugify(text: str) -> str:\n+    return re.sub(r\"[^a-z0-9]+\", \"-\", text.lower()).strip(\"-\")"
+    }
+  ],
+  "previous_review": null,
+  "ci": {
+    "total_count": 2,
+    "check_runs": [
+      {
+        "id": 201,
+        "name": "unit-tests",
+        "status": "in_progress",
+        "conclusion": null,
+        "head_sha": "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+        "html_url": "https://github.com/demo/agent-playground/runs/201",
+        "output": {
+          "title": "",
+          "summary": ""
+        }
+      },
+      {
+        "id": 202,
+        "name": "lint",
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+        "html_url": "https://github.com/demo/agent-playground/runs/202",
+        "output": {
+          "title": "No lint errors",
+          "summary": ""
+        }
+      }
+    ]
+  },
+  "file_contents": {
+    "app/text.py": "import re\n\ndef slugify(text: str) -> str:\n    return re.sub(r\"[^a-z0-9]+\", \"-\", text.lower()).strip(\"-\")\n"
+  }
+}

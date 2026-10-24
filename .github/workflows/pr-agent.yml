@@ -9,6 +9,8 @@ permissions:
   # Commenting on a PR with GITHUB_TOKEN needs pull-requests: write; issues: write alone returned 403 on PR #3.
   pull-requests: write
   issues: write
+  # Read CI check runs and annotations for the reviewed head commit (Milestone 2, read-only).
+  checks: read
 
 concurrency:
   group: pr-agent-${{ github.event.pull_request.number }}
@@ -16,6 +18,8 @@ concurrency:
 
 jobs:
   review:
+    # The check-run name. PR Sentinel ignores its own check when reading CI (PR_SENTINEL_SELF_CHECK must match).
+    name: PR Sentinel review
     # Same-repo branches only. Never switch to pull_request_target to run untrusted PR code with secrets.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

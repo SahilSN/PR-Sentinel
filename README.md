@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 46 pytest tests pass |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 86 pytest tests pass on this branch (46 on `main`) |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -29,9 +29,22 @@ _Last updated: 2026-10-24_
 **Open PRs**
 - #5 `test/live-demo-null-deref`: the live demo PR. Its author marked it **do not merge**; it's kept open as the record of the passing demo.
 
+### Milestone 2 (branch `feature/ci-context-escalation`, not merged; see `MILESTONE_2.md`)
+| Phase | State | Offline-tested | Live-tested |
+|---|---|---|---|
+| A. CI check visibility + failure summary | ✅ Done | ✅ | ⏳ Not yet. Needs `checks: read` on `main` plus a PR with real checks |
+| B. Related-file context (`list_related_files`) | ✅ Done | ✅ | ⏳ Not yet |
+| C. Evidence-based escalation | ✅ Done | ✅ | ⏳ Not yet |
+| D. Static dashboard | ⏳ Next commit | | |
+
+- **CI (A):** reads check runs for the pinned head SHA only. Each check is `passed`, `failed`, `pending` or `neutral`, and the overall state is `passed`, `failed`, `pending`, `mixed`, `not_found` or `unavailable`. A 403 or failed request is `unavailable`, never a pass. PR Sentinel's own check and checks for other commits are ignored. Failed checks include up to 20 annotations. Claude can add a *likely cause*, labelled as its interpretation, only when a check failed.
+- **Context (B):** `list_related_files(path)` returns a changed file's local imports, its tests and same-directory files at the same commit. `read_file` can then open those, and only those (at most 4 per run). Symlinks and files over 1 MB are never offered. Findings in related files never get a line number.
+- **Escalation (C):** a `needs_human` result now carries a reason code, what was checked, what's unknown, and a next step. The codes are `INSUFFICIENT_EVIDENCE` (a serious finding on a file never inspected), `CONFLICTING_EVIDENCE` (CI fails in a reviewed file, but the review found nothing to explain it), `TOOL_FAILURES`, `REPEATED_TOOL_REQUEST`, `INVALID_TOOL_REQUESTS`, `REVIEW_SCHEMA_INVALID`, `MODEL_DECLINED`, `MODEL_REQUESTED` and `NOTHING_REVIEWABLE`. Budget stops stay `budget_exceeded`, with `LIMIT_REACHED`. Open findings or failing CI on their own still give `completed`.
+
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Milestone 2, phases A–C (branch `feature/ci-context-escalation`).** New `ci.py` (check runs → `CIReport`), GitHub client `get_check_runs` / `get_check_annotations` / `get_tree` (full-SHA only), and tools `get_ci_status` and `list_related_files`. Adds the escalation reason codes, and a CI section plus a "Human review needed" section in the same comment. `run_result.json` gains **optional** `ci`, `escalation` and `context_files`; v1 results still validate. CLI adds `--no-ci`, and fixtures can carry `ci` and extra `file_contents`. Workflow: `checks: read`, and the job is now named `PR Sentinel review` so the bot can skip its own check. Fixed one controller bug: a rejected tool call no longer counts as "already seen", so a path can be read once `list_related_files` unlocks it. 4 new demo fixtures, 40 new tests (86 total). Real Claude and GitHub not exercised; the SDK request was checked against a mocked transport.
 - **2026-10-24 — Live demo passed; QA report merged (#4).** (1) PR #5 (`test/live-demo-null-deref`, not merged by design) ran the full flow live: the bot flagged a None-dereference in `demo/user_service.py`, then updated the same comment as resolved after the fix commit. This confirms the `pull-requests: write` fix. (2) Merged #4: SahilSN's QA report `docs/qa/2026-10-24-runtime-hard-ceiling.md`, rebased to docs only. It records the 5s timeout-floor bug and its verified fix in 3609403. No code changes; 46 tests.
 - **2026-10-24 — Runtime boundary fix, PR comment permission, first live run.** (1) Removed the 5s minimum request timeout that let a call started near the deadline overrun it (QA report on PR #4). Requests now get at most the time left, and none starts once the budget is used up. (2) A timeout with under 10s left is now labelled `budget_exceeded`, not `error`, since the client won't retry then. (3) Workflow: `pull-requests: write`, because posting the comment returned 403 on PR #3. (4) Added a comment explaining that `httpx2` is the SDK's real HTTP library, after the live review flagged it as a false positive. 46 tests.
 - **2026-10-24 — Retries restored (#3, from the `fix/claude-retries` branch).** The previous commit's retry rule allowed 0 retries at the default 120s budget, so one 529/429 failed the whole review. Retries now run in `ClaudeModel.create` using the SDK's rule (connection errors, timeouts, 408/409/429/5xx, `x-should-retry`), up to 3 attempts with 1s/2s backoff, only while the remaining time covers them. `request_limits()` was removed.
@@ -109,6 +122,8 @@ Fork PRs are skipped on purpose: they get no secrets, and we never use `pull_req
 ## Configuration
 All settings are environment variables; see `.env.example`. Limits (defaults): `MAX_AGENT_STEPS=6`, `MAX_TOOL_CALLS=10`, `MAX_LLM_CALLS=7`, `MAX_TOTAL_TOKENS=60000`, `MAX_RUNTIME_SECONDS=120`, `MAX_FILES=15`, `MAX_FILE_CHARS=16000`, `MAX_DIFF_CHARS=30000`, `MAX_IDENTICAL_TOOL_REQUESTS=1`.
 
+Milestone 2 limits: `MAX_CHECKS=30`, `MAX_ANNOTATED_CHECKS=5`, `MAX_ANNOTATIONS=20`, `MAX_CHECK_SUMMARY_CHARS=2000`, `MAX_RELATED_FILES=8`, `MAX_CONTEXT_READS=4`, `MAX_TOOL_FETCH_FAILURES=2`. New tools count against `MAX_TOOL_CALLS`. `PR_SENTINEL_SELF_CHECK` (default `PR Sentinel review`) must match the workflow job name. The workflow needs `checks: read` to see CI; without it, CI shows as *unavailable*.
+
 `ANTHROPIC_FALLBACKS=on` (the default) enables the API's server-side refusal fallback on supported models. If a safety classifier declines the request, the API retries it on a fallback model instead of failing. Set it to `off` to disable.
 
 ## Code map and contracts for teammates
@@ -118,7 +133,8 @@ All settings are environment variables; see `.env.example`. Limits (defaults): `
 | `src/pr_agent/schemas.py` | **Shared contracts**: `PullRequestInfo`, `ChangedFile`, `PreviousReview`, `ReviewResult` (= `run_result.json`). Coordinate before changing these. |
 | `src/pr_agent/github_client.py` | GitHub REST wrapper: `get_pull_request`, `get_changed_files`, `read_file(repo, path, ref)`, comments. Pagination, retries, no tokens in errors. |
 | `src/pr_agent/agent.py` | Controller: tool-use loop, limits, stop reasons, repair-once validation, trace. Entry: `run_review(pr, files, previous, model=..., read_source=..., limits=...)`. |
-| `src/pr_agent/tool_registry.py` | The two allowlisted read-only tools, path validation, file selection and caps. |
+| `src/pr_agent/tool_registry.py` | The allowlisted read-only tools (`get_changed_files`, `read_file`, `list_related_files`, `get_ci_status`), path validation, file selection and caps. |
+| `src/pr_agent/ci.py` | CI evidence: check runs for the head SHA → `CIReport` (states, self-check and other-commit filtering, truncation). |
 | `src/pr_agent/claude_client.py` | `ClaudeModel` (real API), `FakeModel` (offline heuristics), `ScriptedModel` (tests). |
 | `src/pr_agent/review.py` | Grounds findings against the diff, compares with the previous review, renders the comment with escaping. |
 | `src/pr_agent/state.py` | Finds our comment (marker **and** bot author), base64 state block, create-or-update. |
@@ -131,6 +147,9 @@ The `run_result.json` format is exactly PROJECT.md §6.4, plus one additive fiel
 - Same-repo PRs only, and check-run / CI-log investigation (P2) is not built.
 - No dollar cost shown, only measured token usage.
 - `--fake-model` is a few regex rules for demos and tests, not a real reviewer.
+- CI is read once, when the review runs. Checks still running show as *pending*, and the comment isn't updated when they finish (it refreshes on the next push). There's no completed-check trigger.
+- CI evidence is check summaries and annotations only; raw job logs aren't read.
+- Related-file discovery resolves Python imports. For other languages it only offers same-directory files.
 - Request timeouts are httpx per-phase timeouts (connect/read/write), not a total for the whole response. A server trickling bytes could in theory stretch a call past the runtime ceiling. That's unlikely with the Anthropic API, and the Actions `timeout-minutes: 5` is the outer backstop.
 
 ## Team

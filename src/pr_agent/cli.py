@@ -16,11 +16,13 @@ from pydantic import ValidationError
 
 from . import config
 from .agent import Tracer, run_review
+from .ci import ci_report_from_fixture, fetch_ci_report
 from .claude_client import ClaudeModel, FakeModel
 from .github_client import GitHubClient, GitHubError
 from .review import new_side_text, render_review_comment
 from .schemas import ChangedFile, PreviousReview, PullRequestInfo, ReviewResult
 from .state import encode_state, get_previous_bot_review, resolve_bot_login, upsert_review_comment
+from .tool_registry import RepoEntry
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 
@@ -40,6 +42,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     mode.add_argument("--publish", action="store_true", help="create/update the bot comment on the PR")
     p.add_argument("--fake-model", action="store_true", help="use the offline heuristic model instead of Claude")
     p.add_argument("--force", action="store_true", help="re-review even if this head SHA was already reviewed")
+    p.add_argument("--no-ci", action="store_true", help="skip reading CI check runs for the head commit")
     p.add_argument("--max-steps", type=int, help="override MAX_AGENT_STEPS (e.g. 1 to demo a budget stop)")
     p.add_argument("--output-dir", type=Path, default=Path("artifacts"), help="where run_result.json/actions.jsonl go")
     return p.parse_args(argv)
@@ -60,12 +63,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise UsageError("ANTHROPIC_API_KEY is not set; set it or pass --fake-model for an offline run")
 
 
-def load_fixture(path: Path) -> tuple[PullRequestInfo, list[ChangedFile], PreviousReview | None, dict]:
+def load_fixture(path: Path) -> tuple[PullRequestInfo, list[ChangedFile], PreviousReview | None, dict, dict | None]:
+    """Fixture keys: the PROJECT.md §6.3 input, plus optional `file_contents` ({path: text} at the head commit,
+    which also acts as the repository file list) and optional `ci` (see ci.ci_report_from_fixture)."""
     data = json.loads(path.read_text())
     pr = PullRequestInfo(**{k: data[k] for k in ("repo", "pr_number", "title", "base_sha", "head_sha")})
     files = [ChangedFile(**f) for f in data["changed_files"]]
     previous = PreviousReview.model_validate(data["previous_review"]) if data.get("previous_review") else None
-    return pr, files, previous, data.get("file_contents") or {}
+    return pr, files, previous, data.get("file_contents") or {}, data.get("ci")
 
 
 def write_result(result: ReviewResult, out_dir: Path) -> Path:
@@ -90,9 +95,12 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
 
     try:
         if args.fixture:
-            pr, files, previous, contents = load_fixture(args.fixture)
+            pr, files, previous, contents, ci_data = load_fixture(args.fixture)
             patches = {f.path: f.patch for f in files}
             read_source = lambda path: contents.get(path) or new_side_text(patches.get(path))  # noqa: E731
+            list_repo_files = lambda: [RepoEntry(p, len(c)) for p, c in contents.items()] + [  # noqa: E731
+                RepoEntry(f.path) for f in files if f.path not in contents]
+            ci = None if args.no_ci or ci_data is None else ci_report_from_fixture(ci_data, pr.head_sha, settings)
             comment_id, bot_login = None, None
         else:
             gh = gh or GitHubClient(config.github_token())
@@ -108,6 +116,10 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
                 tracer.log("skipped", repo=pr.repo, pr_number=pr.pr_number, head_sha=pr.head_sha)
                 return EXIT_OK
             read_source = lambda path: gh.read_file(args.repo, path, pr.head_sha)  # noqa: E731  pinned SHA
+            list_repo_files = lambda: [  # noqa: E731  blobs only: no symlinks or submodules
+                RepoEntry(e["path"], e.get("size")) for e in gh.get_tree(args.repo, pr.head_sha)[0]
+                if e.get("type") == "blob" and e.get("mode") != "120000"]
+            ci = None if args.no_ci else fetch_ci_report(gh, args.repo, pr.head_sha, settings)
     except GitHubError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILED
@@ -116,7 +128,7 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
         return EXIT_USAGE
 
     result = run_review(pr, files, previous, model=model, read_source=read_source,
-                        limits=settings.limits, tracer=tracer)
+                        limits=settings.limits, tracer=tracer, ci=ci, list_repo_files=list_repo_files)
     result_path = write_result(result, args.output_dir)
 
     if args.publish:

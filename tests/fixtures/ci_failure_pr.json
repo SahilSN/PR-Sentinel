@@ -1,0 +1,78 @@
+{
+  "repo": "demo/agent-playground",
+  "pr_number": 21,
+  "title": "Add login handler (CI failing)",
+  "base_sha": "base123",
+  "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "changed_files": [
+    {
+      "path": "app/auth.py",
+      "status": "modified",
+      "patch": "@@ -1,5 +1,10 @@\n from app.db import find_user\n+from app.security import hash_password\n \n \n-def login(user_id, password):\n-    return False\n+def login(user_id, password):\n+    user = find_user(user_id)\n+    if user.password_hash != hash_password(password):\n+        return False\n+    return True",
+      "additions": 6,
+      "deletions": 2
+    },
+    {
+      "path": "assets/logo.png",
+      "status": "added",
+      "patch": null,
+      "additions": 0,
+      "deletions": 0
+    }
+  ],
+  "file_contents": {
+    "app/auth.py": "from app.db import find_user\nfrom app.security import hash_password\n\n\ndef login(user_id, password):\n    user = find_user(user_id)\n    if user.password_hash != hash_password(password):\n        return False\n    return True\n"
+  },
+  "previous_review": null,
+  "ci": {
+    "total_count": 3,
+    "check_runs": [
+      {
+        "id": 101,
+        "name": "unit-tests",
+        "status": "completed",
+        "conclusion": "failure",
+        "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "html_url": "https://github.com/demo/agent-playground/runs/101",
+        "output": {
+          "title": "1 test failed",
+          "summary": "test_login_unknown_user failed"
+        }
+      },
+      {
+        "id": 102,
+        "name": "lint",
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "html_url": "https://github.com/demo/agent-playground/runs/102",
+        "output": {
+          "title": "No lint errors",
+          "summary": ""
+        }
+      },
+      {
+        "id": 103,
+        "name": "PR Sentinel review",
+        "status": "in_progress",
+        "conclusion": null,
+        "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "html_url": "https://github.com/demo/agent-playground/runs/103",
+        "output": {
+          "title": "",
+          "summary": ""
+        }
+      }
+    ],
+    "annotations": {
+      "101": [
+        {
+          "path": "app/auth.py",
+          "start_line": 7,
+          "annotation_level": "failure",
+          "message": "AttributeError: 'NoneType' object has no attribute 'password_hash' (tests/test_auth.py::test_login_unknown_user)"
+        }
+      ]
+    }
+  }
+}

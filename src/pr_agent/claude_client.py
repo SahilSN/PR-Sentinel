@@ -133,18 +133,57 @@ SECRET = re.compile(r"(api_key|apikey|password|secret|token)\s*=\s*[\"'][^\"']{8
 
 
 class FakeModel:
-    """Deterministic heuristic reviewer so the whole pipeline runs without credentials.
+    """Deterministic heuristic reviewer so the whole pipeline runs without credentials. One tool call per turn:
 
-    Turn 1: asks to read_file the first changed file (exercises the tool loop).
-    Turn 2: scans added lines with a few regex rules and returns the ModelReview JSON.
+    1. read_file the first changed file
+    2. get_ci_status, if <pr_data> shows a failed check
+    3. list_related_files for that file, if it has imports
+    4. read_file each related file it imports (at most 2)
+    5. return the ModelReview JSON from a few regex rules (plus None-returning helpers found in step 4)
     """
 
     def create(self, system: str, messages: list, tools: list):
         data = _extract_pr_data(messages)
-        assistant_turns = sum(1 for m in messages if m["role"] == "assistant")
-        if assistant_turns == 0 and data["files"]:
-            return tool_response(("read_file", {"path": data["files"][0]["path"]}))
-        return text_response(json.dumps(_heuristic_review(data)))
+        calls, results = _tool_history(messages)
+        first = data["files"][0]["path"] if data["files"] else None
+        names = {t["name"] for t in tools}
+        if first and ("read_file", first) not in calls:
+            return tool_response(("read_file", {"path": first}))
+        ci = data.get("ci") or {}
+        if ci.get("state") in ("failed", "mixed") and "get_ci_status" in names and ("get_ci_status", None) not in calls:
+            return tool_response(("get_ci_status", {}))
+        first_patch = data["files"][0].get("patch") or "" if first else ""
+        has_imports = re.search(r"^[+ ]\s*(from\s+\S+\s+import|import\s+\w)", first_patch, re.M)
+        if first and has_imports and "list_related_files" in names and ("list_related_files", first) not in calls:
+            return tool_response(("list_related_files", {"path": first}))
+        related = results.get(("list_related_files", first))
+        if related:
+            imported = [r["path"] for r in json.loads(related).get("related_files", [])
+                        if r["reason"] == "imported by the changed file"][:2]
+            for path in imported:
+                if ("read_file", path) not in calls:
+                    return tool_response(("read_file", {"path": path}))
+        helper_texts = {path: text for (name, path), text in results.items()
+                        if name == "read_file" and path != first and not text.startswith("Error")}
+        ci_payload = results.get(("get_ci_status", None))
+        return text_response(json.dumps(_heuristic_review(data, helper_texts, json.loads(ci_payload) if ci_payload else None)))
+
+
+def _tool_history(messages: list) -> tuple[set, dict]:
+    """(name, path) of every tool call so far, and the successful results keyed the same way."""
+    by_id, calls, results = {}, set(), {}
+    for m in messages:
+        if m["role"] == "assistant" and isinstance(m["content"], list):
+            for b in m["content"]:
+                if getattr(b, "type", None) == "tool_use":
+                    key = (b.name, (b.input or {}).get("path"))
+                    by_id[b.id] = key
+                    calls.add(key)
+        elif m["role"] == "user" and isinstance(m["content"], list):
+            for r in m["content"]:
+                if isinstance(r, dict) and r.get("type") == "tool_result" and not r.get("is_error"):
+                    results[by_id.get(r["tool_use_id"])] = r["content"]
+    return calls, results
 
 
 def _extract_pr_data(messages: list) -> dict:
@@ -169,25 +208,49 @@ def _added_lines(patch: str):
         line_no += 1
 
 
-def _heuristic_review(data: dict) -> dict:
+def _none_returning_functions(helper_texts: dict[str, str]) -> dict[str, str]:
+    """{function name: helper path} for helpers whose source shows they can return None."""
+    found: dict[str, str] = {}
+    for path, text in helper_texts.items():
+        current = None
+        for raw in text.splitlines():
+            line = re.sub(r"^\s*\d+  ", "", raw)  # strip read_file's line numbers
+            m = re.match(r"\s*def\s+(\w+)\s*\(.*?\)\s*(->\s*(.+?))?:", line)
+            if m:
+                current = m.group(1)
+                if m.group(3) and re.search(r"Optional\[|\|\s*None|None\s*\|", m.group(3)):
+                    found[current] = path
+                continue
+            if current and re.match(r"\s*return\s+None\b", line):
+                found[current] = path
+    return found
+
+
+def _heuristic_review(data: dict, helper_texts: dict[str, str] | None = None, ci: dict | None = None) -> dict:
     findings = []
+    helpers = _none_returning_functions(helper_texts or {})
     for f in data["files"]:
         path, maybe_none = f["path"], {}
         for line_no, text in _added_lines(f.get("patch") or ""):
             m = OPTIONAL_CALL.match(text)
-            if m:
-                maybe_none[m.group(1)] = line_no
+            h = next((re.match(rf"^\s*(\w+)\s*=\s*.*\b{fn}\(", text) for fn in helpers
+                      if re.match(rf"^\s*(\w+)\s*=\s*.*\b{fn}\(", text)), None)
+            if m or h:
+                fn = next((fn for fn in helpers if h and re.search(rf"\b{fn}\(", text)), None)
+                maybe_none[(m or h).group(1)] = (line_no, fn)
                 continue
             for var in list(maybe_none):
                 if re.search(rf"\bif\s+(not\s+)?{var}\s*(:|\band\b|\bor\b)|\b{var}\s+is\s+(not\s+)?None", text):
                     maybe_none.pop(var)
-                elif re.search(rf"\b{var}\.\w", text):
+                elif re.search(rf"\b{var}\.\w|\b{var}\[", text):
+                    _, fn = maybe_none.pop(var)
+                    source = (f"`{var}` comes from `{fn}()`, and reading {helpers[fn]} confirms it can return None"
+                              if fn else f"`{var}` comes from a lookup that can return None")
                     findings.append(_finding(
                         path, line_no, "null-deref", "high", f"Possible None dereference of `{var}`",
-                        f"`{var}` comes from a lookup that can return None, then `{var}.` is accessed without a check.",
+                        f"{source}, then `{var}` is used without a check.",
                         f"Handle the missing case (e.g. `if {var} is None: ...`) before using `{var}`.",
                     ))
-                    maybe_none.pop(var)
             if re.search(r"\b(eval|exec)\(", text):
                 findings.append(_finding(path, line_no, "code-injection", "high", "Dynamic code execution",
                                          "eval/exec on data can run arbitrary code.", "Parse the input explicitly instead."))
@@ -206,8 +269,20 @@ def _heuristic_review(data: dict) -> dict:
     )
     if resolved:
         summary += f" {len(resolved)} previously reported issue(s) appear fixed."
+    likely_cause = next_step = None
+    failed = [c for c in (ci or {}).get("checks", []) if c.get("state") == "failed"]
+    if failed:
+        notes = [a for c in failed for a in c.get("annotations", [])]
+        match = next((a for a in notes for x in findings if a.get("path") == x["path"]), None)
+        if match:
+            likely_cause = (f"The failing check reports \"{match['message']}\" in {match['path']}, the same file as "
+                            "the None-dereference finding above, so that bug is the likely cause.")
+            next_step = "Fix the finding above, then push; the check should pass."
+        else:
+            next_step = f"Open the log of the failing check '{failed[0]['name']}': the cause isn't clear from the evidence."
     return {"summary": summary, "open_findings": findings, "resolved_finding_ids": resolved,
-            "needs_human": False, "needs_human_reason": None}
+            "needs_human": False, "needs_human_reason": None, "ci_likely_cause": likely_cause,
+            "ci_next_step": next_step}
 
 
 def _finding(path, line, kind, severity, title, explanation, suggestion):

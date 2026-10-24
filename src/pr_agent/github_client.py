@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from urllib.parse import quote
 
@@ -12,6 +13,12 @@ from .schemas import ChangedFile, PullRequestInfo
 API = "https://api.github.com"
 MAX_PAGES = 30  # 30 x 100 = GitHub's own 3000-file cap for PR file listings
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _require_sha(sha: str) -> None:
+    """Only ever query a full commit SHA (the validated PR head), never a branch name or model-supplied ref."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
+        raise GitHubError(None, "expected a full 40-character commit SHA")
 
 
 class GitHubError(Exception):
@@ -109,6 +116,33 @@ class GitHubClient:
         if b"\x00" in raw[:8192]:
             raise GitHubError(None, f"{path} looks like a binary file")
         return raw.decode("utf-8", errors="replace")
+
+    def get_check_runs(self, repo: str, head_sha: str, limit: int) -> tuple[list[dict], int]:
+        """Raw check runs for one commit, at most `limit`, plus GitHub's total_count (to detect truncation)."""
+        _require_sha(head_sha)
+        runs: list[dict] = []
+        total = 0
+        per_page = min(max(limit, 1), 100)
+        for page in range(1, MAX_PAGES + 1):
+            data = self._request("GET", f"/repos/{repo}/commits/{head_sha}/check-runs",
+                                 params={"per_page": per_page, "page": page}).json()
+            total = data.get("total_count", 0)
+            batch = data.get("check_runs", [])
+            runs.extend(batch)
+            if len(runs) >= limit or len(batch) < per_page:
+                break
+        return runs[:limit], total
+
+    def get_check_annotations(self, repo: str, check_run_id: int, limit: int) -> list[dict]:
+        resp = self._request("GET", f"/repos/{repo}/check-runs/{int(check_run_id)}/annotations",
+                             params={"per_page": min(max(limit, 1), 50)})
+        return resp.json()[:limit]
+
+    def get_tree(self, repo: str, sha: str) -> tuple[list[dict], bool]:
+        """All entries of the repository tree at `sha` (one request) and GitHub's `truncated` flag."""
+        _require_sha(sha)
+        data = self._request("GET", f"/repos/{repo}/git/trees/{sha}", params={"recursive": "1"}).json()
+        return data.get("tree", []), bool(data.get("truncated"))
 
     def list_issue_comments(self, repo: str, pr_number: int) -> list[dict]:
         return self._paginate(f"/repos/{repo}/issues/{int(pr_number)}/comments", max_pages=10)
