@@ -3,7 +3,7 @@ import time
 from types import SimpleNamespace
 
 import anthropic
-import httpx2
+import httpx2  # real package: anthropic SDK 2.x is built on httpx2 and rejects plain httpx objects
 import pytest
 
 from pr_agent.agent import SYSTEM_PROMPT, Tracer, run_review
@@ -280,10 +280,27 @@ def test_claude_request_timeout_shrinks_with_remaining_runtime(monkeypatch):
 
     model = ClaudeModel(Settings(use_fallbacks=False, limits=Limits(max_runtime_seconds=30)))
     model.client = StubClient()
-    for now in (0.0, 20.0, 100.0):
+    for now in (0.0, 20.0, 27.0):
         clock[0] = now
         model.create("system", [], [])
-    assert timeouts == [30.0, 10.0, 5.0]
+    assert timeouts == [30.0, 10.0, 3.0]  # never more than the time left (QA report 2026-10-24: no 5s floor)
+    clock[0] = 29.5
+    with pytest.raises(TimeoutError):  # budget used up: no request is started at all
+        model.create("system", [], [])
+    assert len(timeouts) == 3
+
+
+def test_timeout_near_deadline_is_budget_exceeded(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr("pr_agent.agent.time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+
+    class TimesOutNearDeadline:
+        def create(self, *a):
+            clock[0] += 115  # 5s left: ClaudeModel won't retry, so this is the budget running out
+            raise anthropic.APITimeoutError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+
+    result, _ = run(TimesOutNearDeadline(), limits=Limits(max_runtime_seconds=120))
+    assert result.status == "budget_exceeded"
 
 
 def test_pr_text_cannot_close_the_untrusted_data_envelope():

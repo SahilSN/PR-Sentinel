@@ -47,7 +47,9 @@ class ClaudeModel:
         )
         for attempt in range(MAX_ATTEMPTS):
             remaining = self._deadline - time.monotonic()
-            client = self.client.with_options(timeout=min(90.0, max(remaining, 5.0)), max_retries=0)
+            if remaining <= 1.0:  # never start a request the budget can't cover (no minimum-timeout overrun)
+                raise TimeoutError("MAX_RUNTIME_SECONDS was used up before the model request could start")
+            client = self.client.with_options(timeout=min(90.0, remaining), max_retries=0)
             try:
                 if self.settings.use_fallbacks:
                     # Server-side refusal fallback: if a safety classifier declines, the API retries on a fallback model.

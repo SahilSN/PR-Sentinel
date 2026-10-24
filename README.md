@@ -7,27 +7,32 @@ _Last updated: 2026-10-24_
 
 **What it does today**
 - When run on a PR, it reads the diff and lets Claude investigate with two read-only tools (`get_changed_files`, `read_file`). It then posts **one** review comment and updates that same comment on later pushes, marking earlier findings as resolved or still open.
-- Every run is bounded by step, tool-call, token and time limits, and ends as `completed`, `needs_human`, `budget_exceeded` or `error`. `MAX_RUNTIME_SECONDS` is a hard ceiling: each Claude request, including SDK retries, must fit in the time left.
+- Every run is bounded by step, tool-call, token and time limits, and ends as `completed`, `needs_human`, `budget_exceeded` or `error`. `MAX_RUNTIME_SECONDS` is a hard ceiling. Transient API errors (429, 5xx, 529 overloaded, timeouts) are retried up to 3 attempts, but no request or retry gets more time than is left.
 - PR content is sent to Claude inside an escaped `<pr_data>` block, so text in a PR can't break out of the untrusted-data section.
 - Each run writes `artifacts/run_result.json` (the PROJECT.md §6.4 contract) and appends to `artifacts/actions.jsonl` (a trace for the dashboard).
 
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 43 pytest tests pass |
-| Real `anthropic` SDK request/response handling | ✅ Tested against a mocked HTTP transport only |
-| Real Claude API call | ⏳ Not run yet (needs `ANTHROPIC_API_KEY`) |
-| Real GitHub PR (dry-run / publish) | ⏳ Not run yet; tested against an in-memory fake GitHub |
-| GitHub Actions trigger | ⏳ Workflow installs and runs on PRs (seen on PR #2); it stops at "ANTHROPIC_API_KEY is not set" until the repo secret is added |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 46 pytest tests pass |
+| Real Claude API call | ✅ **Live in Actions on PR #3** (Python 3.11): 1 `read_file` call, valid structured output, `completed` in 11s, about 17k tokens |
+| Reading a real GitHub PR | ✅ Live on PR #3 (PR data, files, and file contents at the head SHA) |
+| Publishing the PR comment | ⏳ Failed with 403 on PR #3. Fixed by granting `pull-requests: write`; the next PR's run confirms it |
+| GitHub Actions trigger | ✅ Runs on every same-repo PR; the `ANTHROPIC_API_KEY` secret is set |
 
 **Next up**
-1. Add the `ANTHROPIC_API_KEY` Actions secret and do a real dry-run on a fixture and on a PR.
-2. Open a demo PR with a bug, push a fix, and confirm the comment updates (the PROJECT.md §14 demo).
+1. Confirm the next PR's run posts its comment, then push to that PR and confirm the same comment updates (the PROJECT.md §14 demo).
+2. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent. Its other observations were accurate.
 3. P2 (optional): summarize failing CI checks; dashboard reading `run_result.json`.
+
+**Open PRs**
+- #4 `test/runtime-hard-ceiling` (QA report): not merged yet. It conflicts with #3, and its xfail test imports the removed `request_limits()`. The bug it reports is fixed on `main`. Waiting for a rebase that keeps the report and drops the test change.
 
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Runtime boundary fix, PR comment permission, first live run.** (1) Removed the 5s minimum request timeout that let a call started near the deadline overrun it (QA report on PR #4). Requests now get at most the time left, and none starts once the budget is used up. (2) A timeout with under 10s left is now labelled `budget_exceeded`, not `error`, since the client won't retry then. (3) Workflow: `pull-requests: write`, because posting the comment returned 403 on PR #3. (4) Added a comment explaining that `httpx2` is the SDK's real HTTP library, after the live review flagged it as a false positive. 46 tests.
+- **2026-10-24 — Retries restored (#3, from the `fix/claude-retries` branch).** The previous commit's retry rule allowed 0 retries at the default 120s budget, so one 529/429 failed the whole review. Retries now run in `ClaudeModel.create` using the SDK's rule (connection errors, timeouts, 408/409/429/5xx, `x-should-retry`), up to 3 attempts with 1s/2s backoff, only while the remaining time covers them. `request_limits()` was removed.
 - **2026-10-24 — Hard wall-clock ceiling (follow-up to #2).** The SDK retries timed-out requests, so one Claude call could still take up to 3× the remaining time. Now a call only gets the retries that fit in the time left. A run is labelled `budget_exceeded` only when a request actually timed out; other failures after the deadline stay `error`. Adds `request_limits()` in `claude_client.py` and 2 tests.
 - **2026-10-24 — Review hardening (#2, from the `fix/review-hardening` branch).** Three fixes, each with a regression test that fails on the old code: (1) PR text containing `</pr_data>` could close the untrusted-data block, and `<`/`>` are now escaped; (2) each Claude request is capped at the time left in `MAX_RUNTIME_SECONDS`; (3) `times_seen` no longer increases when the same commit is re-reviewed. `compare_with_previous()` gained an optional `head_sha` argument, so existing callers still work.
 - **2026-10-24 — Status + changelog in README.** Added this section and the "Current status" section. From now on, every commit updates both, so teammates can see what changed without reading diffs.
@@ -124,6 +129,7 @@ The `run_result.json` format is exactly PROJECT.md §6.4, plus one additive fiel
 - Same-repo PRs only, and check-run / CI-log investigation (P2) is not built.
 - No dollar cost shown, only measured token usage.
 - `--fake-model` is a few regex rules for demos and tests, not a real reviewer.
+- Request timeouts are httpx per-phase timeouts (connect/read/write), not a total for the whole response. A server trickling bytes could in theory stretch a call past the runtime ceiling. That's unlikely with the Anthropic API, and the Actions `timeout-minutes: 5` is the outer backstop.
 
 ## Team
 - Lead implementation (Claude Code)

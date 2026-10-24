@@ -6,7 +6,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  # Commenting on a PR with GITHUB_TOKEN needs pull-requests: write; issues: write alone returned 403 on PR #3.
+  pull-requests: write
   issues: write
 
 concurrency:

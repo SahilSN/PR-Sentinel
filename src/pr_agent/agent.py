@@ -18,6 +18,8 @@ from .review import carry_forward, compare_with_previous, ground_findings
 from .schemas import ChangedFile, ModelReview, PreviousReview, PullRequestInfo, ReviewResult, Stats
 from .tool_registry import TOOLS, ReviewContext, ToolError, execute_tool, select_files
 
+RETRY_HEADROOM_SECONDS = 10  # matches ClaudeModel: no retry starts unless backoff (<=4s) + 5s remain
+
 SYSTEM_PROMPT = """You review a GitHub pull request. Identify specific, meaningful correctness, security, or \
 reliability problems introduced by the change. Avoid stylistic nitpicks and speculative warnings; a short, \
 accurate review is better than many guesses.
@@ -148,7 +150,8 @@ def run_review(
         except Exception as exc:  # API/auth/network failure must never look like "no issues found"
             tracer.log("llm_error", step=step, error=type(exc).__name__)
             timed_out = isinstance(exc, (TimeoutError, anthropic.APITimeoutError))
-            if timed_out and time.monotonic() - started > limits.max_runtime_seconds:  # cut off by our own clock
+            # ClaudeModel stops retrying a timeout once under ~10s remain, so treat that as the budget running out.
+            if timed_out and limits.max_runtime_seconds - (time.monotonic() - started) < RETRY_HEADROOM_SECONDS:
                 return stopped("budget_exceeded", f"Wall-clock limit of {limits.max_runtime_seconds}s reached "
                                                   "during a model request.")
             return stopped("error", f"Model request failed ({type(exc).__name__}). No review was produced.")
