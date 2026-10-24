@@ -15,22 +15,24 @@ _Last updated: 2026-10-24_
 | Area | State |
 |---|---|
 | Offline fixture runs (`--fake-model`) | ✅ Working; 46 pytest tests pass |
-| Real Claude API call | ✅ **Live in Actions on PR #3** (Python 3.11): 1 `read_file` call, valid structured output, `completed` in 11s, about 17k tokens |
-| Reading a real GitHub PR | ✅ Live on PR #3 (PR data, files, and file contents at the head SHA) |
-| Publishing the PR comment | ⏳ Failed with 403 on PR #3. Fixed by granting `pull-requests: write`; the next PR's run confirms it |
+| Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
+| Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
+| Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
+| **End-to-end demo (PROJECT.md definition of done)** | ✅ **Passed on PR #5.** A bug commit got the comment flagging the `greeting()` crash; the fix commit updated the same comment, marking it resolved. No manual prompting. |
 | GitHub Actions trigger | ✅ Runs on every same-repo PR; the `ANTHROPIC_API_KEY` secret is set |
 
 **Next up**
-1. Confirm the next PR's run posts its comment, then push to that PR and confirm the same comment updates (the PROJECT.md §14 demo).
-2. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent. Its other observations were accurate.
+1. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
+2. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
 3. P2 (optional): summarize failing CI checks; dashboard reading `run_result.json`.
 
 **Open PRs**
-- #4 `test/runtime-hard-ceiling` (QA report): not merged yet. It conflicts with #3, and its xfail test imports the removed `request_limits()`. The bug it reports is fixed on `main`. Waiting for a rebase that keeps the report and drops the test change.
+- #5 `test/live-demo-null-deref`: the live demo PR. Its author marked it **do not merge**; it's kept open as the record of the passing demo.
 
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Live demo passed; QA report merged (#4).** (1) PR #5 (`test/live-demo-null-deref`, not merged by design) ran the full flow live: the bot flagged a None-dereference in `demo/user_service.py`, then updated the same comment as resolved after the fix commit. This confirms the `pull-requests: write` fix. (2) Merged #4: SahilSN's QA report `docs/qa/2026-10-24-runtime-hard-ceiling.md`, rebased to docs only. It records the 5s timeout-floor bug and its verified fix in 3609403. No code changes; 46 tests.
 - **2026-10-24 — Runtime boundary fix, PR comment permission, first live run.** (1) Removed the 5s minimum request timeout that let a call started near the deadline overrun it (QA report on PR #4). Requests now get at most the time left, and none starts once the budget is used up. (2) A timeout with under 10s left is now labelled `budget_exceeded`, not `error`, since the client won't retry then. (3) Workflow: `pull-requests: write`, because posting the comment returned 403 on PR #3. (4) Added a comment explaining that `httpx2` is the SDK's real HTTP library, after the live review flagged it as a false positive. 46 tests.
 - **2026-10-24 — Retries restored (#3, from the `fix/claude-retries` branch).** The previous commit's retry rule allowed 0 retries at the default 120s budget, so one 529/429 failed the whole review. Retries now run in `ClaudeModel.create` using the SDK's rule (connection errors, timeouts, 408/409/429/5xx, `x-should-retry`), up to 3 attempts with 1s/2s backoff, only while the remaining time covers them. `request_limits()` was removed.
 - **2026-10-24 — Hard wall-clock ceiling (follow-up to #2).** The SDK retries timed-out requests, so one Claude call could still take up to 3× the remaining time. Now a call only gets the retries that fit in the time left. A run is labelled `budget_exceeded` only when a request actually timed out; other failures after the deadline stay `error`. Adds `request_limits()` in `claude_client.py` and 2 tests.
