@@ -17,7 +17,7 @@ We are building an autonomous GitHub pull-request review agent for a hackathon. 
 - Preserve other people's changes. Never reset, overwrite, delete, or reformat unrelated work.
 - Keep agreed function signatures, API endpoints, data schemas, and module boundaries stable. If a contract must change, explicitly flag it to the team.
 - Prefer small, focused changes and readable code. Do not perform unrelated refactors or introduce unnecessary abstractions.
-- Work on feature branches. Do not push directly to `main`.
+- The lead implementer (Claude Max) commits and pushes completed, tested work directly to `main`. Everyone else works on `fix/*` / `test/*` branches and opens a PR; the lead implementer validates and merges it into `main`.
 - Do not force-push or run destructive Git commands unless explicitly instructed.
 
 ## Implementation Standards
