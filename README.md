@@ -2,6 +2,35 @@
 
 > An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress.
 
+## Current status
+_Last updated: 2026-10-24_
+
+**What it does today**
+- When run on a PR, it reads the diff and lets Claude investigate with two read-only tools (`get_changed_files`, `read_file`). It then posts **one** review comment and updates that same comment on later pushes, marking earlier findings as resolved or still open.
+- Every run is bounded by step, tool-call, token and time limits, and ends as `completed`, `needs_human`, `budget_exceeded` or `error`.
+- Each run writes `artifacts/run_result.json` (the PROJECT.md §6.4 contract) and appends to `artifacts/actions.jsonl` (a trace for the dashboard).
+
+**Tested vs. not yet tested**
+| Area | State |
+|---|---|
+| Offline fixture runs (`--fake-model`) | ✅ Working; 37 pytest tests pass |
+| Real `anthropic` SDK request/response handling | ✅ Tested against a mocked HTTP transport only |
+| Real Claude API call | ⏳ Not run yet (needs `ANTHROPIC_API_KEY`) |
+| Real GitHub PR (dry-run / publish) | ⏳ Not run yet; tested against an in-memory fake GitHub |
+| GitHub Actions trigger | ⏳ Workflow is on `main`; needs the `ANTHROPIC_API_KEY` repo secret |
+
+**Next up**
+1. Add the `ANTHROPIC_API_KEY` Actions secret and do a real dry-run on a fixture and on a PR.
+2. Open a demo PR with a bug, push a fix, and confirm the comment updates (the PROJECT.md §14 demo).
+3. P2 (optional): summarize failing CI checks; dashboard reading `run_result.json`.
+
+## Changelog
+Newest first. Every commit adds an entry here.
+
+- **2026-10-24 — Status + changelog in README.** Added this section and the "Current status" section. From now on, every commit updates both, so teammates can see what changed without reading diffs.
+- **2026-10-24 — PROJECT.md added; branch rule changed.** The spec is now in the repo. The lead implementer (Claude Max) pushes tested work directly to `main`. Debugging (`fix/*`) and testing (`test/*`) work goes through PRs that Claude Max validates and merges. `AGENTS.md` was updated to match.
+- **2026-10-24 — PR Sentinel prototype (#1).** First working slice: contracts, the Claude tool-use loop with limits, the GitHub wrapper, the single upserted comment with stored state, re-review across pushes, the Actions workflow, fixtures and 37 tests.
+
 ## Problem
 Developers keep re-checking PRs by hand and repeating the same review comments after every push. Most AI review demos produce one block of text and stop.
 
@@ -98,7 +127,7 @@ The `run_result.json` format is exactly PROJECT.md §6.4, plus one additive fiel
 - Debugging on `fix/*` branches (Claude Code)
 - Testing, QA, differentiation (Codex)
 
-Shared agent rules live in `AGENTS.md` / `CLAUDE.md`; personal role instructions go in a gitignored `CLAUDE.local.md`.
+Shared agent rules live in `AGENTS.md` / `CLAUDE.md`; personal role instructions go in a gitignored `CLAUDE.local.md`. Debugging work goes on `fix/*` branches and testing work on `test/*` branches, each opened as a PR into `main`.
 
 ## Demo
 See PROJECT.md §14 for the judge script. Keep a recorded successful run in `demo/` as a backup.
