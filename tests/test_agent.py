@@ -2,9 +2,13 @@ import json
 import time
 from types import SimpleNamespace
 
+import anthropic
+import httpx2
+import pytest
+
 from pr_agent.agent import SYSTEM_PROMPT, Tracer, run_review
 from pr_agent.claude_client import (PR_DATA_CLOSE, ClaudeModel, FakeModel, FakeResponse, ScriptedModel, Usage,
-                                    request_limits, text_response, tool_response)
+                                    text_response, tool_response)
 from pr_agent.config import Limits, Settings
 from pr_agent.schemas import ChangedFile, PreviousReview, PullRequestInfo
 
@@ -205,15 +209,57 @@ def test_non_timeout_failure_after_deadline_is_still_error(monkeypatch):
     assert result.status == "error"
 
 
-def test_retries_only_when_they_fit_in_remaining_time():
-    assert request_limits(300) == {"timeout": 90.0, "max_retries": 2}
-    assert request_limits(200) == {"timeout": 90.0, "max_retries": 1}
-    assert request_limits(120) == {"timeout": 90.0, "max_retries": 0}
-    assert request_limits(-10) == {"timeout": 5.0, "max_retries": 0}
-    for remaining in (30, 89, 90, 179, 181, 269, 271, 600):
-        limits = request_limits(remaining)
-        worst_case = limits["timeout"] * (limits["max_retries"] + 1)
-        assert worst_case <= max(remaining, 5.0)
+def scripted_claude(monkeypatch, outcomes, budget):
+    """ClaudeModel on a fake clock whose API calls follow `outcomes`: "timeout", an HTTP status code, or a response."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    clock = [0.0]
+    monkeypatch.setattr("pr_agent.claude_client.time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s)))
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    timeouts = []
+
+    class StubClient:
+        messages = property(lambda self: self)
+
+        def with_options(self, timeout, max_retries):
+            assert max_retries == 0  # retries are ours, so each one is bounded by the remaining time
+            timeouts.append(timeout)
+            return self
+
+        def create(self, **kwargs):
+            outcome = outcomes.pop(0)
+            if outcome == "timeout":
+                clock[0] += timeouts[-1]
+                raise anthropic.APITimeoutError(request=request)
+            if isinstance(outcome, int):
+                raise anthropic.APIStatusError("api error", response=httpx2.Response(outcome, request=request),
+                                               body=None)
+            return outcome
+
+    model = ClaudeModel(Settings(use_fallbacks=False, limits=Limits(max_runtime_seconds=budget)))
+    model.client = StubClient()
+    return model, timeouts, clock
+
+
+def test_overloaded_api_is_retried_within_default_budget(monkeypatch):
+    model, timeouts, _ = scripted_claude(monkeypatch, [529, 429, "ok"], budget=120)
+    assert model.create("system", [], []) == "ok"
+    assert len(timeouts) == 3
+
+
+def test_retried_timeouts_never_run_past_the_runtime_limit(monkeypatch):
+    model, timeouts, clock = scripted_claude(monkeypatch, ["timeout"] * 3, budget=120)
+    with pytest.raises(anthropic.APITimeoutError):  # the agent turns this into budget_exceeded
+        model.create("system", [], [])
+    assert timeouts == [90.0, 29.0]  # the retry only gets the time that was left
+    assert clock[0] <= 120
+
+
+def test_client_errors_are_not_retried(monkeypatch):
+    model, timeouts, _ = scripted_claude(monkeypatch, [400, "ok"], budget=120)
+    with pytest.raises(anthropic.APIStatusError):
+        model.create("system", [], [])
+    assert len(timeouts) == 1
 
 
 def test_claude_request_timeout_shrinks_with_remaining_runtime(monkeypatch):
