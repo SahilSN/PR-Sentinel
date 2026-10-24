@@ -86,11 +86,13 @@ class ReviewContext:
     read_source: Callable[[str], str]  # path -> text at pr.head_sha; set by the controller
     limits: Limits
     ci: CIReport | None = None
-    list_repo_files: Callable[[], list[RepoEntry]] | None = None  # files at pr.head_sha; None = unavailable
+    # Files at pr.head_sha, as a list or (list, truncated). None = unavailable.
+    list_repo_files: Callable[[], list[RepoEntry] | tuple[list[RepoEntry], bool]] | None = None
     files_read: list[str] = field(default_factory=list)
     context_files: list[ContextFile] = field(default_factory=list)
     related_allowed: set[str] = field(default_factory=set)
     fetch_failures: int = 0
+    tree_truncated: bool = False
     _tree: dict[str, RepoEntry] | None = None
 
     def tree(self) -> dict[str, RepoEntry]:
@@ -98,7 +100,9 @@ class ReviewContext:
             if self.list_repo_files is None:
                 raise ToolError("the repository file list is not available in this run")
             try:
-                self._tree = {e.path: e for e in self.list_repo_files()}
+                listed = self.list_repo_files()
+                entries, self.tree_truncated = listed if isinstance(listed, tuple) else (listed, False)
+                self._tree = {e.path: e for e in entries}
             except Exception as exc:
                 self.fetch_failures += 1
                 raise ToolFetchError(f"could not list repository files: {exc}") from None
@@ -230,11 +234,15 @@ def related_files_payload(ctx: ReviewContext, path: str) -> str:
         if len(related) >= ctx.limits.max_related_files:
             break
     ctx.related_allowed.update(r["path"] for r in related)
+    note = f"read_file can now open these paths (at most {ctx.limits.max_context_reads} related reads per run)."
+    if ctx.tree_truncated:
+        note += " The repository file list was truncated by GitHub, so some related files may be missing."
     return json.dumps({
         "path": path,
         "commit": ctx.pr.head_sha,
         "related_files": related,
-        "note": f"read_file can now open these paths (at most {ctx.limits.max_context_reads} related reads per run).",
+        "file_list_truncated": ctx.tree_truncated,
+        "note": note,
     })
 
 

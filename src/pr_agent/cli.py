@@ -116,9 +116,10 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
                 tracer.log("skipped", repo=pr.repo, pr_number=pr.pr_number, head_sha=pr.head_sha)
                 return EXIT_OK
             read_source = lambda path: gh.read_file(args.repo, path, pr.head_sha)  # noqa: E731  pinned SHA
-            list_repo_files = lambda: [  # noqa: E731  blobs only: no symlinks or submodules
-                RepoEntry(e["path"], e.get("size")) for e in gh.get_tree(args.repo, pr.head_sha)[0]
-                if e.get("type") == "blob" and e.get("mode") != "120000"]
+            def list_repo_files() -> tuple[list[RepoEntry], bool]:  # blobs only: no symlinks or submodules
+                entries, truncated = gh.get_tree(args.repo, pr.head_sha)
+                return [RepoEntry(e["path"], e.get("size")) for e in entries
+                        if e.get("type") == "blob" and e.get("mode") != "120000"], truncated
             ci = None if args.no_ci else fetch_ci_report(gh, args.repo, pr.head_sha, settings)
     except GitHubError as exc:
         print(f"error: {exc}", file=sys.stderr)

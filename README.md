@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 98 pytest tests pass |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 101 pytest tests pass |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -22,20 +22,20 @@ _Last updated: 2026-10-24_
 | GitHub Actions trigger | ✅ Runs on every same-repo PR; the `ANTHROPIC_API_KEY` secret is set |
 
 **Next up**
-1. Live-verify Milestone 2: open a disposable PR with a failing check and confirm the comment's CI section, then the dashboard in the run artifacts. This costs a few cents of Claude usage and posts one bot comment.
+1. See a live escalation (Phase C): e.g. a PR whose CI fails in a changed file for a reason the diff doesn't show.
 2. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
 3. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
 
 **Open PRs**
-- #5 `test/live-demo-null-deref`: the live demo PR. Its author marked it **do not merge**; it's kept open as the record of the passing demo.
+- #5 `test/live-demo-null-deref` and #6 `test/live-demo-milestone2`: live demo PRs, marked **do not merge**, kept open as the record of the passing demos.
 
 ### Milestone 2 (merged to `main`; see `MILESTONE_2.md`)
 | Phase | State | Offline-tested | Live-tested |
 |---|---|---|---|
-| A. CI check visibility + failure summary | ✅ Done | ✅ | ⏳ Not yet. `checks: read` is now on `main`; needs a PR with real checks |
-| B. Related-file context (`list_related_files`) | ✅ Done | ✅ | ⏳ Not yet |
-| C. Evidence-based escalation | ✅ Done | ✅ | ⏳ Not yet |
-| D. Static dashboard (`python -m pr_agent.dashboard`) | ✅ Done | ✅ | ⏳ The workflow now builds it into each run's artifacts; not yet seen live |
+| A. CI check visibility + failure summary | ✅ Done | ✅ | ✅ PR #6: read the real failing `demo-tests` check, ignored its own check, likely cause matched the crash |
+| B. Related-file context (`list_related_files`) | ✅ Done | ✅ | ✅ PR #6: read unchanged `src/pr_agent/state.py` to confirm the helper returns `None`, then flagged the crash line |
+| C. Evidence-based escalation | ✅ Done | ✅ | ⏳ Not triggered live yet; both PR #6 runs completed normally |
+| D. Static dashboard (`python -m pr_agent.dashboard`) | ✅ Done | ✅ | ✅ PR #6: `dashboard.html` uploaded with the run artifacts |
 
 - **CI (A):** reads check runs for the pinned head SHA only. Each check is `passed`, `failed`, `pending` or `neutral`, and the overall state is `passed`, `failed`, `pending`, `mixed`, `not_found` or `unavailable`. A 403 or failed request is `unavailable`, never a pass. PR Sentinel's own check and checks for other commits are ignored. Failed checks include up to 20 annotations. Claude can add a *likely cause*, labelled as its interpretation, only when a check failed.
 - **Context (B):** `list_related_files(path)` returns a changed file's local imports, its tests and same-directory files at the same commit. `read_file` can then open those, and only those (at most 4 per run). Symlinks and files over 1 MB are never offered. Findings in related files never get a line number.
@@ -45,6 +45,7 @@ _Last updated: 2026-10-24_
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Milestone 2 live-verified; #7 and #8 merged; truncated file list surfaced.** (1) PR #6 (live demo, not merged) exercised CI evidence, related-file context, single-comment update and the dashboard artifact on real GitHub and Claude. Only escalation wasn't triggered. (2) Merged #7 (Sidharth Deepak): failed checks now show the first *failure-level* annotation instead of a runner warning, annotations are sorted failures-first before truncation, and warnings no longer count as failure locations. (3) Merged #8 (SahilSN): QA report `docs/qa/2026-10-24-milestone-2.md`, no blockers. (4) Follow-up from that report: when GitHub truncates the repository file list, `list_related_files` now says so (`file_list_truncated`) instead of silently offering an incomplete list. 101 tests.
 - **2026-10-24 — Milestone 2 merged to `main`.** Fast-forwarded `main` to `feature/ci-context-escalation` (the two entries below), then deleted the branch. From the next PR on, reviews read CI checks (new `checks: read` permission), can use `list_related_files`, escalate with reason codes, and attach `dashboard.html` to the run artifacts. The workflow's check is now named **PR Sentinel review**. All of this is tested offline (98 tests) but not yet live.
 - **2026-10-24 — Milestone 2, phase D: run dashboard (was branch `feature/ci-context-escalation`).** New `src/pr_agent/dashboard.py`: `python -m pr_agent.dashboard --input … --trace … --output … [--demo-data]` renders one run as static HTML from the real artifacts. It escapes every string, links only to `https://github.com/…`, and shows no invented cost or history. The trace's `run_start` event now records the key limits so the page can show usage against them. The workflow builds `artifacts/dashboard.html` after each review (non-blocking). 12 new tests (98 total), including a fix for trace lines that are valid JSON but not events.
 - **2026-10-24 — Milestone 2, phases A–C (was branch `feature/ci-context-escalation`).** New `ci.py` (check runs → `CIReport`), GitHub client `get_check_runs` / `get_check_annotations` / `get_tree` (full-SHA only), and tools `get_ci_status` and `list_related_files`. Adds the escalation reason codes, and a CI section plus a "Human review needed" section in the same comment. `run_result.json` gains **optional** `ci`, `escalation` and `context_files`; v1 results still validate. CLI adds `--no-ci`, and fixtures can carry `ci` and extra `file_contents`. Workflow: `checks: read`, and the job is now named `PR Sentinel review` so the bot can skip its own check. Fixed one controller bug: a rejected tool call no longer counts as "already seen", so a path can be read once `list_related_files` unlocks it. 4 new demo fixtures, 40 new tests (86 total). Real Claude and GitHub not exercised; the SDK request was checked against a mocked transport.

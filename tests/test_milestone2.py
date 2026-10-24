@@ -417,3 +417,15 @@ def test_escalation_updates_the_same_comment(clean_env, tmp_path):
     saved = json.loads((tmp_path / "run_result.json").read_text())
     assert saved["status"] == "needs_human" and saved["escalation"]["reason_code"] == "CONFLICTING_EVIDENCE"
     assert saved["stop_reason"]
+
+
+def test_truncated_file_list_is_reported_to_the_model(clean_env, tmp_path):
+    """QA report 2026-10-24-milestone-2.md: GitHub's `truncated` tree flag must not be dropped silently."""
+    clean_env.setenv("GITHUB_TOKEN", "x")
+    data = {**load_fixture("cross_file_pr.json"), "tree_truncated": True}
+    model = ScriptedModel([tool_response(("list_related_files", {"path": "app/profile_view.py"})), final()])
+    main(["--repo", "demo/agent-playground", "--pr", "23", "--output-dir", str(tmp_path), "--fake-model"],
+         gh=FakeGitHub(data).client(), model=model)
+    listed = json.loads(model.requests[1][-1]["content"][0]["content"])
+    assert listed["file_list_truncated"] is True and "may be missing" in listed["note"]
+    assert "app/profiles.py" in {r["path"] for r in listed["related_files"]}  # still offers what it found

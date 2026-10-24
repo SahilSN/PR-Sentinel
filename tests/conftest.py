@@ -60,7 +60,7 @@ class FakeGitHub:
             contents = self.fixture.get("file_contents", {})
             tree = [{"path": p, "type": "blob", "mode": "100644", "size": len(c)} for p, c in contents.items()]
             tree += self.fixture.get("extra_tree_entries", [])
-            return httpx.Response(200, json={"tree": tree, "truncated": False})
+            return httpx.Response(200, json={"tree": tree, "truncated": self.fixture.get("tree_truncated", False)})
         if request.method == "GET" and path == "/user":
             return httpx.Response(403, json={"message": "Resource not accessible by integration"})
         if path == f"/repos/{repo}/issues/{pr}/comments":
