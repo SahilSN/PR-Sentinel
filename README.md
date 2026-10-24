@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 86 pytest tests pass on this branch (46 on `main`) |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 98 pytest tests pass on this branch (46 on `main`) |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -35,15 +35,17 @@ _Last updated: 2026-10-24_
 | A. CI check visibility + failure summary | ✅ Done | ✅ | ⏳ Not yet. Needs `checks: read` on `main` plus a PR with real checks |
 | B. Related-file context (`list_related_files`) | ✅ Done | ✅ | ⏳ Not yet |
 | C. Evidence-based escalation | ✅ Done | ✅ | ⏳ Not yet |
-| D. Static dashboard | ⏳ Next commit | | |
+| D. Static dashboard (`python -m pr_agent.dashboard`) | ✅ Done | ✅ | ⏳ The workflow builds it into the run artifacts once merged |
 
 - **CI (A):** reads check runs for the pinned head SHA only. Each check is `passed`, `failed`, `pending` or `neutral`, and the overall state is `passed`, `failed`, `pending`, `mixed`, `not_found` or `unavailable`. A 403 or failed request is `unavailable`, never a pass. PR Sentinel's own check and checks for other commits are ignored. Failed checks include up to 20 annotations. Claude can add a *likely cause*, labelled as its interpretation, only when a check failed.
 - **Context (B):** `list_related_files(path)` returns a changed file's local imports, its tests and same-directory files at the same commit. `read_file` can then open those, and only those (at most 4 per run). Symlinks and files over 1 MB are never offered. Findings in related files never get a line number.
+- **Dashboard (D):** a static, self-contained HTML page (no JavaScript) for one run, built from `run_result.json` and `actions.jsonl`. It shows status, findings, CI checks and likely cause, escalation and next step, files inspected, tool calls, and usage against limits. Everything is HTML-escaped. There's no cost estimate and no history: it's one run's snapshot. `--demo-data` labels fixture runs.
 - **Escalation (C):** a `needs_human` result now carries a reason code, what was checked, what's unknown, and a next step. The codes are `INSUFFICIENT_EVIDENCE` (a serious finding on a file never inspected), `CONFLICTING_EVIDENCE` (CI fails in a reviewed file, but the review found nothing to explain it), `TOOL_FAILURES`, `REPEATED_TOOL_REQUEST`, `INVALID_TOOL_REQUESTS`, `REVIEW_SCHEMA_INVALID`, `MODEL_DECLINED`, `MODEL_REQUESTED` and `NOTHING_REVIEWABLE`. Budget stops stay `budget_exceeded`, with `LIMIT_REACHED`. Open findings or failing CI on their own still give `completed`.
 
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Milestone 2, phase D: run dashboard (branch `feature/ci-context-escalation`).** New `src/pr_agent/dashboard.py`: `python -m pr_agent.dashboard --input … --trace … --output … [--demo-data]` renders one run as static HTML from the real artifacts. It escapes every string, links only to `https://github.com/…`, and shows no invented cost or history. The trace's `run_start` event now records the key limits so the page can show usage against them. The workflow builds `artifacts/dashboard.html` after each review (non-blocking). 12 new tests (98 total), including a fix for trace lines that are valid JSON but not events.
 - **2026-10-24 — Milestone 2, phases A–C (branch `feature/ci-context-escalation`).** New `ci.py` (check runs → `CIReport`), GitHub client `get_check_runs` / `get_check_annotations` / `get_tree` (full-SHA only), and tools `get_ci_status` and `list_related_files`. Adds the escalation reason codes, and a CI section plus a "Human review needed" section in the same comment. `run_result.json` gains **optional** `ci`, `escalation` and `context_files`; v1 results still validate. CLI adds `--no-ci`, and fixtures can carry `ci` and extra `file_contents`. Workflow: `checks: read`, and the job is now named `PR Sentinel review` so the bot can skip its own check. Fixed one controller bug: a rejected tool call no longer counts as "already seen", so a path can be read once `list_related_files` unlocks it. 4 new demo fixtures, 40 new tests (86 total). Real Claude and GitHub not exercised; the SDK request was checked against a mocked transport.
 - **2026-10-24 — Live demo passed; QA report merged (#4).** (1) PR #5 (`test/live-demo-null-deref`, not merged by design) ran the full flow live: the bot flagged a None-dereference in `demo/user_service.py`, then updated the same comment as resolved after the fix commit. This confirms the `pull-requests: write` fix. (2) Merged #4: SahilSN's QA report `docs/qa/2026-10-24-runtime-hard-ceiling.md`, rebased to docs only. It records the 5s timeout-floor bug and its verified fix in 3609403. No code changes; 46 tests.
 - **2026-10-24 — Runtime boundary fix, PR comment permission, first live run.** (1) Removed the 5s minimum request timeout that let a call started near the deadline overrun it (QA report on PR #4). Requests now get at most the time left, and none starts once the budget is used up. (2) A timeout with under 10s left is now labelled `budget_exceeded`, not `error`, since the client won't retry then. (3) Workflow: `pull-requests: write`, because posting the comment returned 403 on PR #3. (4) Added a comment explaining that `httpx2` is the SDK's real HTTP library, after the live review flagged it as a false positive. 46 tests.
@@ -105,6 +107,16 @@ python -m pr_agent.cli --repo OWNER/REPO --pr 12 --publish
 
 Each run writes `artifacts/run_result.json` (output contract) and appends to `artifacts/actions.jsonl` (trace).
 
+### 4. Milestone 2 offline demos (no credentials)
+```bash
+python -m pr_agent.cli --fixture tests/fixtures/ci_failure_pr.json --fake-model --dry-run   # failed check linked to the bug
+python -m pr_agent.cli --fixture tests/fixtures/ci_pending_pr.json --fake-model --dry-run   # running check shown as pending
+python -m pr_agent.cli --fixture tests/fixtures/cross_file_pr.json --fake-model --dry-run   # bug found via a related helper file
+python -m pr_agent.cli --fixture tests/fixtures/ci_conflict_pr.json --fake-model --dry-run  # unexplained CI failure -> needs_human
+python -m pr_agent.dashboard --input artifacts/run_result.json --trace artifacts/actions.jsonl \
+  --output artifacts/dashboard.html --demo-data                                             # then open artifacts/dashboard.html
+```
+
 ### Exit codes
 `0` = review finished (including deliberate `needs_human` / `budget_exceeded` stops) or skipped because this commit was already reviewed · `1` = `error` status or GitHub failure · `2` = bad flags, missing credentials, or bad input.
 
@@ -134,6 +146,7 @@ Milestone 2 limits: `MAX_CHECKS=30`, `MAX_ANNOTATED_CHECKS=5`, `MAX_ANNOTATIONS=
 | `src/pr_agent/github_client.py` | GitHub REST wrapper: `get_pull_request`, `get_changed_files`, `read_file(repo, path, ref)`, comments. Pagination, retries, no tokens in errors. |
 | `src/pr_agent/agent.py` | Controller: tool-use loop, limits, stop reasons, repair-once validation, trace. Entry: `run_review(pr, files, previous, model=..., read_source=..., limits=...)`. |
 | `src/pr_agent/tool_registry.py` | The allowlisted read-only tools (`get_changed_files`, `read_file`, `list_related_files`, `get_ci_status`), path validation, file selection and caps. |
+| `src/pr_agent/dashboard.py` | Static HTML dashboard for one run's `run_result.json` + `actions.jsonl` (escaped, no JS). |
 | `src/pr_agent/ci.py` | CI evidence: check runs for the head SHA → `CIReport` (states, self-check and other-commit filtering, truncation). |
 | `src/pr_agent/claude_client.py` | `ClaudeModel` (real API), `FakeModel` (offline heuristics), `ScriptedModel` (tests). |
 | `src/pr_agent/review.py` | Grounds findings against the diff, compares with the previous review, renders the comment with escaping. |

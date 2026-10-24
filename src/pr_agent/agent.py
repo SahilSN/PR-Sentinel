@@ -122,7 +122,9 @@ def run_review(
     ctx = ReviewContext(pr=pr, files=reviewable, unreviewed=unreviewed, read_source=read_source, limits=limits,
                         ci=ci, list_repo_files=list_repo_files)
     tracer.log("run_start", repo=pr.repo, pr_number=pr.pr_number, head_sha=pr.head_sha,
-               files=len(reviewable), unreviewed=len(unreviewed), ci_state=ci.state if ci else None)
+               files=len(reviewable), unreviewed=len(unreviewed), ci_state=ci.state if ci else None,
+               limits={k: getattr(limits, k) for k in ("max_agent_steps", "max_tool_calls", "max_llm_calls",
+                                                         "max_total_tokens", "max_runtime_seconds")})
 
     def finish(result: ReviewResult) -> ReviewResult:
         result.stats = stats

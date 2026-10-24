@@ -42,6 +42,10 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python -m pr_agent.cli --repo "$REPO" --pr "$PR_NUMBER" --publish
+      - name: Build run dashboard
+        if: always() && hashFiles('artifacts/run_result.json') != ''
+        continue-on-error: true
+        run: python -m pr_agent.dashboard --input artifacts/run_result.json --trace artifacts/actions.jsonl --output artifacts/dashboard.html
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
