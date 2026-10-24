@@ -13,6 +13,8 @@ def find_user(username):
 
 def greeting(username):
     user = find_user(username)
+    if user is None:
+        return "Hello, stranger!"
     return f"Hello, {user['name']}!"
 
 
