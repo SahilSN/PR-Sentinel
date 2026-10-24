@@ -1,0 +1,15 @@
+.DS_Store
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.*
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+artifacts/
+CLAUDE.local.md
+*.egg-info/
+!.env.example

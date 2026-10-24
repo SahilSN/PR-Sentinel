@@ -1,0 +1,38 @@
+{
+  "repo": "demo/agent-playground",
+  "pr_number": 12,
+  "title": "Add login handler",
+  "base_sha": "base123",
+  "head_sha": "head789",
+  "changed_files": [
+    {
+      "path": "app/auth.py",
+      "status": "modified",
+      "patch": "@@ -1,5 +1,12 @@\n from app.db import find_user\n+from app.security import hash_password\n \n \n-def login(user_id, password):\n-    return False\n+def login(user_id, password):\n+    user = find_user(user_id)\n+    if user is None:\n+        return False\n+    if user.password_hash != hash_password(password):\n+        return False\n+    return True",
+      "additions": 8,
+      "deletions": 2
+    }
+  ],
+  "file_contents": {
+    "app/auth.py": "from app.db import find_user\nfrom app.security import hash_password\n\n\ndef login(user_id, password):\n    user = find_user(user_id)\n    if user is None:\n        return False\n    if user.password_hash != hash_password(password):\n        return False\n    return True\n"
+  },
+  "previous_review": {
+    "comment_id": null,
+    "head_sha": "head456",
+    "status": "completed",
+    "open_findings": [
+      {
+        "id": "app/auth.py:null-deref",
+        "path": "app/auth.py",
+        "line": 7,
+        "severity": "high",
+        "title": "Possible None dereference of `user`",
+        "explanation": "`user` comes from a lookup that can return None, then `user.` is accessed without a check.",
+        "suggestion": "Handle the missing case (e.g. `if user is None: ...`) before using `user`.",
+        "confidence": "medium",
+        "times_seen": 1
+      }
+    ],
+    "resolved_findings": []
+  }
+}
