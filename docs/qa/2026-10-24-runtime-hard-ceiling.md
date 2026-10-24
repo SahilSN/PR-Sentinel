@@ -36,3 +36,18 @@ Actual: `request_limits()` imposes a five-second minimum timeout, so the documen
 ## Recommendation
 
 Demo-ready: **No**. Fix or accurately document the runtime ceiling, then complete a live same-repository PR review and comment-update rehearsal.
+
+## Follow-up verification
+
+Retested at commit `3609403ab86b24723787ca088c39ed8933c425be` after PR #3 and its follow-up:
+
+- Full automated suite: 46 passed on Python 3.12.
+- Source and test compilation: passed.
+- The five-second timeout floor and `request_limits()` helper were removed.
+- Requests are no longer started when at most one second remains, and each attempt receives no more than the calculated remaining budget.
+- Retry coverage now includes overloaded, rate-limited, timeout, and non-retryable client-error cases.
+- A live Claude request and real PR read completed on PR #3. Comment publication failed with 403; `pull-requests: write` was added but still needs confirmation on a subsequent PR.
+
+The reported boundary defect is **resolved**. The documented residual limitation remains: HTTP client timeouts are per phase rather than a guaranteed whole-response deadline, with the five-minute Actions job timeout acting as the outer backstop.
+
+Updated recommendation: **Not yet demo-ready** until comment creation and same-comment update are demonstrated on a live PR.
