@@ -78,17 +78,19 @@ def ground_findings(review: ModelReview, files: list[ChangedFile], max_findings:
 
 
 def compare_with_previous(
-    current: list[Finding], resolved_ids: list[str], previous: PreviousReview | None
+    current: list[Finding], resolved_ids: list[str], previous: PreviousReview | None, head_sha: str | None = None
 ) -> tuple[list[Finding], list[Finding]]:
     """Split into (open, resolved). A previous finding is resolved only if the model says so with evidence
     and doesn't re-report it. If the model is silent about it, we keep it open at low confidence."""
     if previous is None:
         return current, []
+    # times_seen counts distinct head SHAs: re-reviewing the same commit (after an error, or --force) adds nothing.
+    seen_bump = 0 if head_sha is not None and previous.head_sha == head_sha else 1
     prev_by_id = {f.id: f for f in previous.open_findings}
     open_findings: list[Finding] = []
     for f in current:
         if f.id in prev_by_id:
-            f = f.model_copy(update={"times_seen": prev_by_id[f.id].times_seen + 1})
+            f = f.model_copy(update={"times_seen": prev_by_id[f.id].times_seen + seen_bump})
         open_findings.append(f)
     current_ids = {f.id for f in current}
     resolved: list[Finding] = []
@@ -102,7 +104,7 @@ def compare_with_previous(
                 prev.model_copy(
                     update={
                         "confidence": "low",
-                        "times_seen": prev.times_seen + 1,
+                        "times_seen": prev.times_seen + seen_bump,
                         "explanation": prev.explanation.split(" (Carried over")[0]
                         + " (Carried over from an earlier commit; the fix could not be confirmed.)",
                     }

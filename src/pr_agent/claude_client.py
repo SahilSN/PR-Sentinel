@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 
 from .config import Settings
@@ -22,8 +23,15 @@ class ClaudeModel:
         self.settings = settings
         # Credentials come from the environment (ANTHROPIC_API_KEY); never passed around in code.
         self.client = anthropic.Anthropic(timeout=90.0, max_retries=2)
+        self._deadline: float | None = None  # set on the first request
 
     def create(self, system: str, messages: list, tools: list):
+        # Cap each request attempt at what's left of MAX_RUNTIME_SECONDS, so one slow call can't run far past the
+        # agent's wall-clock limit (and the Actions job timeout) before the controller gets to stop the run.
+        now = time.monotonic()
+        if self._deadline is None:
+            self._deadline = now + self.settings.limits.max_runtime_seconds
+        client = self.client.with_options(timeout=min(90.0, max(self._deadline - now, 5.0)))
         kwargs = dict(
             model=self.settings.model,
             max_tokens=16000,
@@ -37,10 +45,10 @@ class ClaudeModel:
         )
         if self.settings.use_fallbacks:
             # Server-side refusal fallback: if a safety classifier declines, the API retries on a fallback model.
-            return self.client.beta.messages.create(
+            return client.beta.messages.create(
                 **kwargs, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
             )
-        return self.client.messages.create(**kwargs)
+        return client.messages.create(**kwargs)
 
 
 # ---------- Offline doubles ----------
