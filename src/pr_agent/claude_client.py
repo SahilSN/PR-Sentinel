@@ -16,22 +16,24 @@ from .schemas import model_review_json_schema
 PR_DATA_OPEN, PR_DATA_CLOSE = "<pr_data>", "</pr_data>"
 
 
+MAX_ATTEMPTS = 3  # one try plus two retries, like the SDK default
+
+
 class ClaudeModel:
     def __init__(self, settings: Settings):
         import anthropic  # imported lazily so offline mode doesn't need the SDK configured
 
         self.settings = settings
         # Credentials come from the environment (ANTHROPIC_API_KEY); never passed around in code.
-        self.client = anthropic.Anthropic(timeout=90.0, max_retries=2)
+        # Retries happen in create(), not in the SDK: the SDK would give a timed-out retry a fresh full timeout.
+        self.client = anthropic.Anthropic(timeout=90.0, max_retries=0)
         self._deadline: float | None = None  # set on the first request
 
     def create(self, system: str, messages: list, tools: list):
-        # Cap each request attempt at what's left of MAX_RUNTIME_SECONDS, so one slow call can't run far past the
+        # Every attempt gets at most what's left of MAX_RUNTIME_SECONDS, so a slow or failing API can't run past the
         # agent's wall-clock limit (and the Actions job timeout) before the controller gets to stop the run.
-        now = time.monotonic()
         if self._deadline is None:
-            self._deadline = now + self.settings.limits.max_runtime_seconds
-        client = self.client.with_options(**request_limits(self._deadline - now))
+            self._deadline = time.monotonic() + self.settings.limits.max_runtime_seconds
         kwargs = dict(
             model=self.settings.model,
             max_tokens=16000,
@@ -43,22 +45,36 @@ class ClaudeModel:
                 "format": {"type": "json_schema", "schema": model_review_json_schema()},
             },
         )
-        if self.settings.use_fallbacks:
-            # Server-side refusal fallback: if a safety classifier declines, the API retries on a fallback model.
-            return client.beta.messages.create(
-                **kwargs, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
-            )
-        return client.messages.create(**kwargs)
+        for attempt in range(MAX_ATTEMPTS):
+            remaining = self._deadline - time.monotonic()
+            client = self.client.with_options(timeout=min(90.0, max(remaining, 5.0)), max_retries=0)
+            try:
+                if self.settings.use_fallbacks:
+                    # Server-side refusal fallback: if a safety classifier declines, the API retries on a fallback model.
+                    return client.beta.messages.create(
+                        **kwargs, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
+                    )
+                return client.messages.create(**kwargs)
+            except Exception as exc:
+                backoff = 2.0**attempt
+                out_of_time = self._deadline - time.monotonic() < backoff + 5.0
+                if attempt == MAX_ATTEMPTS - 1 or out_of_time or not is_retryable(exc):
+                    raise
+                time.sleep(backoff)
 
 
-def request_limits(remaining: float) -> dict:
-    """Per-attempt timeout plus only as many SDK retries as still fit in the remaining time.
+def is_retryable(exc: Exception) -> bool:
+    """The SDK's own retry rule: connection errors and timeouts, 408, 409, 429 and 5xx (including 529 overloaded)."""
+    import anthropic
 
-    The SDK retries timed-out requests, so without this a call could take (retries + 1) x timeout in total.
-    """
-    timeout = min(90.0, max(remaining, 5.0))
-    retries = min(2, max(0, int(remaining // timeout) - 1))
-    return {"timeout": timeout, "max_retries": retries}
+    if isinstance(exc, anthropic.APIConnectionError):  # includes APITimeoutError
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        should_retry = exc.response.headers.get("x-should-retry")
+        if should_retry in ("true", "false"):
+            return should_retry == "true"
+        return exc.status_code in (408, 409, 429) or exc.status_code >= 500
+    return False
 
 
 # ---------- Offline doubles ----------
