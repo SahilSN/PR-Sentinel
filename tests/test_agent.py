@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from pr_agent.agent import SYSTEM_PROMPT, Tracer, run_review
 from pr_agent.claude_client import (PR_DATA_CLOSE, ClaudeModel, FakeModel, FakeResponse, ScriptedModel, Usage,
-                                    text_response, tool_response)
+                                    request_limits, text_response, tool_response)
 from pr_agent.config import Limits, Settings
 from pr_agent.schemas import ChangedFile, PreviousReview, PullRequestInfo
 
@@ -192,6 +192,30 @@ def test_model_request_cut_off_by_wall_clock_is_budget_exceeded(monkeypatch):
     assert result.status == "budget_exceeded" and "Wall-clock" in result.stop_reason
 
 
+def test_non_timeout_failure_after_deadline_is_still_error(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr("pr_agent.agent.time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+
+    class Broken:
+        def create(self, *a):
+            clock[0] += 200
+            raise ConnectionError("refused")
+
+    result, _ = run(Broken(), limits=Limits(max_runtime_seconds=120))
+    assert result.status == "error"
+
+
+def test_retries_only_when_they_fit_in_remaining_time():
+    assert request_limits(300) == {"timeout": 90.0, "max_retries": 2}
+    assert request_limits(200) == {"timeout": 90.0, "max_retries": 1}
+    assert request_limits(120) == {"timeout": 90.0, "max_retries": 0}
+    assert request_limits(-10) == {"timeout": 5.0, "max_retries": 0}
+    for remaining in (30, 89, 90, 179, 181, 269, 271, 600):
+        limits = request_limits(remaining)
+        worst_case = limits["timeout"] * (limits["max_retries"] + 1)
+        assert worst_case <= max(remaining, 5.0)
+
+
 def test_claude_request_timeout_shrinks_with_remaining_runtime(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     clock = [0.0]
@@ -201,7 +225,7 @@ def test_claude_request_timeout_shrinks_with_remaining_runtime(monkeypatch):
     class StubClient:
         messages = property(lambda self: self)
 
-        def with_options(self, timeout):
+        def with_options(self, timeout, max_retries):
             timeouts.append(timeout)
             return self
 

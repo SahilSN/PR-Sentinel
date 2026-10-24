@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+import anthropic
 from pydantic import ValidationError
 
 from .claude_client import PR_DATA_CLOSE, PR_DATA_OPEN
@@ -146,7 +147,8 @@ def run_review(
             response = model.create(SYSTEM_PROMPT, messages, TOOLS)
         except Exception as exc:  # API/auth/network failure must never look like "no issues found"
             tracer.log("llm_error", step=step, error=type(exc).__name__)
-            if time.monotonic() - started > limits.max_runtime_seconds:  # the request was cut off by our own clock
+            timed_out = isinstance(exc, (TimeoutError, anthropic.APITimeoutError))
+            if timed_out and time.monotonic() - started > limits.max_runtime_seconds:  # cut off by our own clock
                 return stopped("budget_exceeded", f"Wall-clock limit of {limits.max_runtime_seconds}s reached "
                                                   "during a model request.")
             return stopped("error", f"Model request failed ({type(exc).__name__}). No review was produced.")

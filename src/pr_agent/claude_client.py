@@ -31,7 +31,7 @@ class ClaudeModel:
         now = time.monotonic()
         if self._deadline is None:
             self._deadline = now + self.settings.limits.max_runtime_seconds
-        client = self.client.with_options(timeout=min(90.0, max(self._deadline - now, 5.0)))
+        client = self.client.with_options(**request_limits(self._deadline - now))
         kwargs = dict(
             model=self.settings.model,
             max_tokens=16000,
@@ -49,6 +49,16 @@ class ClaudeModel:
                 **kwargs, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
             )
         return client.messages.create(**kwargs)
+
+
+def request_limits(remaining: float) -> dict:
+    """Per-attempt timeout plus only as many SDK retries as still fit in the remaining time.
+
+    The SDK retries timed-out requests, so without this a call could take (retries + 1) x timeout in total.
+    """
+    timeout = min(90.0, max(remaining, 5.0))
+    retries = min(2, max(0, int(remaining // timeout) - 1))
+    return {"timeout": timeout, "max_retries": retries}
 
 
 # ---------- Offline doubles ----------

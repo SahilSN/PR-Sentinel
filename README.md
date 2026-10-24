@@ -7,17 +7,18 @@ _Last updated: 2026-10-24_
 
 **What it does today**
 - When run on a PR, it reads the diff and lets Claude investigate with two read-only tools (`get_changed_files`, `read_file`). It then posts **one** review comment and updates that same comment on later pushes, marking earlier findings as resolved or still open.
-- Every run is bounded by step, tool-call, token and time limits, and ends as `completed`, `needs_human`, `budget_exceeded` or `error`.
+- Every run is bounded by step, tool-call, token and time limits, and ends as `completed`, `needs_human`, `budget_exceeded` or `error`. `MAX_RUNTIME_SECONDS` is a hard ceiling: each Claude request, including SDK retries, must fit in the time left.
+- PR content is sent to Claude inside an escaped `<pr_data>` block, so text in a PR can't break out of the untrusted-data section.
 - Each run writes `artifacts/run_result.json` (the PROJECT.md §6.4 contract) and appends to `artifacts/actions.jsonl` (a trace for the dashboard).
 
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 37 pytest tests pass |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 43 pytest tests pass |
 | Real `anthropic` SDK request/response handling | ✅ Tested against a mocked HTTP transport only |
 | Real Claude API call | ⏳ Not run yet (needs `ANTHROPIC_API_KEY`) |
 | Real GitHub PR (dry-run / publish) | ⏳ Not run yet; tested against an in-memory fake GitHub |
-| GitHub Actions trigger | ⏳ Workflow is on `main`; needs the `ANTHROPIC_API_KEY` repo secret |
+| GitHub Actions trigger | ⏳ Workflow installs and runs on PRs (seen on PR #2); it stops at "ANTHROPIC_API_KEY is not set" until the repo secret is added |
 
 **Next up**
 1. Add the `ANTHROPIC_API_KEY` Actions secret and do a real dry-run on a fixture and on a PR.
@@ -27,6 +28,8 @@ _Last updated: 2026-10-24_
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Hard wall-clock ceiling (follow-up to #2).** The SDK retries timed-out requests, so one Claude call could still take up to 3× the remaining time. Now a call only gets the retries that fit in the time left. A run is labelled `budget_exceeded` only when a request actually timed out; other failures after the deadline stay `error`. Adds `request_limits()` in `claude_client.py` and 2 tests.
+- **2026-10-24 — Review hardening (#2, from the `fix/review-hardening` branch).** Three fixes, each with a regression test that fails on the old code: (1) PR text containing `</pr_data>` could close the untrusted-data block, and `<`/`>` are now escaped; (2) each Claude request is capped at the time left in `MAX_RUNTIME_SECONDS`; (3) `times_seen` no longer increases when the same commit is re-reviewed. `compare_with_previous()` gained an optional `head_sha` argument, so existing callers still work.
 - **2026-10-24 — Status + changelog in README.** Added this section and the "Current status" section. From now on, every commit updates both, so teammates can see what changed without reading diffs.
 - **2026-10-24 — PROJECT.md added; branch rule changed.** The spec is now in the repo. The lead implementer (Claude Max) pushes tested work directly to `main`. Debugging (`fix/*`) and testing (`test/*`) work goes through PRs that Claude Max validates and merges. `AGENTS.md` was updated to match.
 - **2026-10-24 — PR Sentinel prototype (#1).** First working slice: contracts, the Claude tool-use loop with limits, the GitHub wrapper, the single upserted comment with stored state, re-review across pushes, the Actions workflow, fixtures and 37 tests.
