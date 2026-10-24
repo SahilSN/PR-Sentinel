@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 98 pytest tests pass on this branch (46 on `main`) |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 98 pytest tests pass |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -22,20 +22,20 @@ _Last updated: 2026-10-24_
 | GitHub Actions trigger | ✅ Runs on every same-repo PR; the `ANTHROPIC_API_KEY` secret is set |
 
 **Next up**
-1. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
-2. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
-3. P2 (optional): summarize failing CI checks; dashboard reading `run_result.json`.
+1. Live-verify Milestone 2: open a disposable PR with a failing check and confirm the comment's CI section, then the dashboard in the run artifacts. This costs a few cents of Claude usage and posts one bot comment.
+2. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
+3. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
 
 **Open PRs**
 - #5 `test/live-demo-null-deref`: the live demo PR. Its author marked it **do not merge**; it's kept open as the record of the passing demo.
 
-### Milestone 2 (branch `feature/ci-context-escalation`, not merged; see `MILESTONE_2.md`)
+### Milestone 2 (merged to `main`; see `MILESTONE_2.md`)
 | Phase | State | Offline-tested | Live-tested |
 |---|---|---|---|
-| A. CI check visibility + failure summary | ✅ Done | ✅ | ⏳ Not yet. Needs `checks: read` on `main` plus a PR with real checks |
+| A. CI check visibility + failure summary | ✅ Done | ✅ | ⏳ Not yet. `checks: read` is now on `main`; needs a PR with real checks |
 | B. Related-file context (`list_related_files`) | ✅ Done | ✅ | ⏳ Not yet |
 | C. Evidence-based escalation | ✅ Done | ✅ | ⏳ Not yet |
-| D. Static dashboard (`python -m pr_agent.dashboard`) | ✅ Done | ✅ | ⏳ The workflow builds it into the run artifacts once merged |
+| D. Static dashboard (`python -m pr_agent.dashboard`) | ✅ Done | ✅ | ⏳ The workflow now builds it into each run's artifacts; not yet seen live |
 
 - **CI (A):** reads check runs for the pinned head SHA only. Each check is `passed`, `failed`, `pending` or `neutral`, and the overall state is `passed`, `failed`, `pending`, `mixed`, `not_found` or `unavailable`. A 403 or failed request is `unavailable`, never a pass. PR Sentinel's own check and checks for other commits are ignored. Failed checks include up to 20 annotations. Claude can add a *likely cause*, labelled as its interpretation, only when a check failed.
 - **Context (B):** `list_related_files(path)` returns a changed file's local imports, its tests and same-directory files at the same commit. `read_file` can then open those, and only those (at most 4 per run). Symlinks and files over 1 MB are never offered. Findings in related files never get a line number.
@@ -45,8 +45,9 @@ _Last updated: 2026-10-24_
 ## Changelog
 Newest first. Every commit adds an entry here.
 
-- **2026-10-24 — Milestone 2, phase D: run dashboard (branch `feature/ci-context-escalation`).** New `src/pr_agent/dashboard.py`: `python -m pr_agent.dashboard --input … --trace … --output … [--demo-data]` renders one run as static HTML from the real artifacts. It escapes every string, links only to `https://github.com/…`, and shows no invented cost or history. The trace's `run_start` event now records the key limits so the page can show usage against them. The workflow builds `artifacts/dashboard.html` after each review (non-blocking). 12 new tests (98 total), including a fix for trace lines that are valid JSON but not events.
-- **2026-10-24 — Milestone 2, phases A–C (branch `feature/ci-context-escalation`).** New `ci.py` (check runs → `CIReport`), GitHub client `get_check_runs` / `get_check_annotations` / `get_tree` (full-SHA only), and tools `get_ci_status` and `list_related_files`. Adds the escalation reason codes, and a CI section plus a "Human review needed" section in the same comment. `run_result.json` gains **optional** `ci`, `escalation` and `context_files`; v1 results still validate. CLI adds `--no-ci`, and fixtures can carry `ci` and extra `file_contents`. Workflow: `checks: read`, and the job is now named `PR Sentinel review` so the bot can skip its own check. Fixed one controller bug: a rejected tool call no longer counts as "already seen", so a path can be read once `list_related_files` unlocks it. 4 new demo fixtures, 40 new tests (86 total). Real Claude and GitHub not exercised; the SDK request was checked against a mocked transport.
+- **2026-10-24 — Milestone 2 merged to `main`.** Fast-forwarded `main` to `feature/ci-context-escalation` (the two entries below), then deleted the branch. From the next PR on, reviews read CI checks (new `checks: read` permission), can use `list_related_files`, escalate with reason codes, and attach `dashboard.html` to the run artifacts. The workflow's check is now named **PR Sentinel review**. All of this is tested offline (98 tests) but not yet live.
+- **2026-10-24 — Milestone 2, phase D: run dashboard (was branch `feature/ci-context-escalation`).** New `src/pr_agent/dashboard.py`: `python -m pr_agent.dashboard --input … --trace … --output … [--demo-data]` renders one run as static HTML from the real artifacts. It escapes every string, links only to `https://github.com/…`, and shows no invented cost or history. The trace's `run_start` event now records the key limits so the page can show usage against them. The workflow builds `artifacts/dashboard.html` after each review (non-blocking). 12 new tests (98 total), including a fix for trace lines that are valid JSON but not events.
+- **2026-10-24 — Milestone 2, phases A–C (was branch `feature/ci-context-escalation`).** New `ci.py` (check runs → `CIReport`), GitHub client `get_check_runs` / `get_check_annotations` / `get_tree` (full-SHA only), and tools `get_ci_status` and `list_related_files`. Adds the escalation reason codes, and a CI section plus a "Human review needed" section in the same comment. `run_result.json` gains **optional** `ci`, `escalation` and `context_files`; v1 results still validate. CLI adds `--no-ci`, and fixtures can carry `ci` and extra `file_contents`. Workflow: `checks: read`, and the job is now named `PR Sentinel review` so the bot can skip its own check. Fixed one controller bug: a rejected tool call no longer counts as "already seen", so a path can be read once `list_related_files` unlocks it. 4 new demo fixtures, 40 new tests (86 total). Real Claude and GitHub not exercised; the SDK request was checked against a mocked transport.
 - **2026-10-24 — Live demo passed; QA report merged (#4).** (1) PR #5 (`test/live-demo-null-deref`, not merged by design) ran the full flow live: the bot flagged a None-dereference in `demo/user_service.py`, then updated the same comment as resolved after the fix commit. This confirms the `pull-requests: write` fix. (2) Merged #4: SahilSN's QA report `docs/qa/2026-10-24-runtime-hard-ceiling.md`, rebased to docs only. It records the 5s timeout-floor bug and its verified fix in 3609403. No code changes; 46 tests.
 - **2026-10-24 — Runtime boundary fix, PR comment permission, first live run.** (1) Removed the 5s minimum request timeout that let a call started near the deadline overrun it (QA report on PR #4). Requests now get at most the time left, and none starts once the budget is used up. (2) A timeout with under 10s left is now labelled `budget_exceeded`, not `error`, since the client won't retry then. (3) Workflow: `pull-requests: write`, because posting the comment returned 403 on PR #3. (4) Added a comment explaining that `httpx2` is the SDK's real HTTP library, after the live review flagged it as a false positive. 46 tests.
 - **2026-10-24 — Retries restored (#3, from the `fix/claude-retries` branch).** The previous commit's retry rule allowed 0 retries at the default 120s budget, so one 529/429 failed the whole review. Retries now run in `ClaudeModel.create` using the SDK's rule (connection errors, timeouts, 408/409/429/5xx, `x-should-retry`), up to 3 attempts with 1s/2s backoff, only while the remaining time covers them. `request_limits()` was removed.
