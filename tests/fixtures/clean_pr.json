@@ -1,0 +1,17 @@
+{
+  "repo": "demo/agent-playground",
+  "pr_number": 13,
+  "title": "Add slugify helper",
+  "base_sha": "base123",
+  "head_sha": "clean001",
+  "changed_files": [
+    {
+      "path": "app/text.py",
+      "status": "added",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,4 @@\n+import re\n+\n+def slugify(text: str) -> str:\n+    return re.sub(r\"[^a-z0-9]+\", \"-\", text.lower()).strip(\"-\")"
+    }
+  ],
+  "previous_review": null
+}

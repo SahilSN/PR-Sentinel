@@ -1,0 +1,27 @@
+{
+  "repo": "demo/agent-playground",
+  "pr_number": 12,
+  "title": "Add login handler",
+  "base_sha": "base123",
+  "head_sha": "head456",
+  "changed_files": [
+    {
+      "path": "app/auth.py",
+      "status": "modified",
+      "patch": "@@ -1,5 +1,10 @@\n from app.db import find_user\n+from app.security import hash_password\n \n \n-def login(user_id, password):\n-    return False\n+def login(user_id, password):\n+    user = find_user(user_id)\n+    if user.password_hash != hash_password(password):\n+        return False\n+    return True",
+      "additions": 6,
+      "deletions": 2
+    },
+    {
+      "path": "assets/logo.png",
+      "status": "added",
+      "patch": null,
+      "additions": 0,
+      "deletions": 0
+    }
+  ],
+  "file_contents": {
+    "app/auth.py": "from app.db import find_user\nfrom app.security import hash_password\n\n\ndef login(user_id, password):\n    user = find_user(user_id)\n    if user.password_hash != hash_password(password):\n        return False\n    return True\n"
+  },
+  "previous_review": null
+}
