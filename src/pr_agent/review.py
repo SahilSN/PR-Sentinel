@@ -236,7 +236,7 @@ def render_ci_section(ci: CIReport) -> list[str]:
     for c in ci.checks[:15]:
         detail = ""
         if c.state == "failed":
-            first = c.annotations[0] if c.annotations else None
+            first = next((a for a in c.annotations if a.level == "failure"), None)
             if first:
                 where = _code(first.path) + (f" line {first.line}" if first.line else "")
                 detail = f" — {_escape(first.message, single_line=True, limit=200)} ({where})"
