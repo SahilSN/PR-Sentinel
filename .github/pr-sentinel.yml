@@ -4,7 +4,7 @@
 # Kill switch: the repo variable SENTINEL_AUTONOMY overrides `autonomy` downward. Set it to `review` to stop
 # all writes immediately.
 
-autonomy: shadow                 # off | review | shadow | fix | merge
+autonomy: merge                 # off | review | shadow | fix | merge
 owners: [SahilSN]
 trusted_bots: ["dependabot[bot]"]
 require_owner_for_agent_prs: true
