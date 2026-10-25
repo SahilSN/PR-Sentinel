@@ -43,6 +43,17 @@ def revert_entries(gh: GitHubClient, repo: str, merge_sha: str, parent_sha: str,
     return entries
 
 
+def touched_paths(files: list[dict]) -> list[str]:
+    """Every path a revert would write: a rename's old path is restored too, so it must be checked as well
+    (QA report docs/qa/2026-10-24-milestone-3.md)."""
+    paths = []
+    for f in files:
+        paths.append(f["filename"])
+        if f.get("previous_filename"):
+            paths.append(f["previous_filename"])
+    return paths
+
+
 def changed_since(gh: GitHubClient, repo: str, merge_sha: str, head_sha: str, paths: list[str]) -> list[str]:
     if head_sha == merge_sha:
         return []
@@ -65,7 +76,7 @@ def run_guard(gh: GitHubClient, repo: str, sha: str, conclusion: str, run_url: s
     files = commit.get("files", [])
     default_branch = gh.get_repo(repo).get("default_branch", "main")
     main_head = gh.get_ref_sha(repo, default_branch)
-    later = changed_since(gh, repo, sha, main_head, [f["filename"] for f in files])
+    later = changed_since(gh, repo, sha, main_head, touched_paths(files))
     link = f" ([failing run]({run_url}))" if run_url and run_url.startswith("https://github.com/") else ""
     out = GuardOutcome("escalated" if later else "reverted")
     if not publish:

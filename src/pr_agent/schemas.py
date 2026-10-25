@@ -279,6 +279,7 @@ class PreviousReview(BaseModel):
     # Milestone 3 state (optional, so older state blocks still parse)
     summary: str = ""
     unreviewed_files: list[str] = Field(default_factory=list)
+    stats: Stats | None = None  # the review's own usage, shown again when a later run reuses it
     triage: TriageResult | None = None
     decision: Decision | None = None
     autofix_attempts: int = 0

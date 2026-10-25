@@ -26,7 +26,7 @@ from .schemas import ChangedFile, PreviousReview, PullRequestInfo, ReviewResult
 from .executor import Executor, tree_modes
 from .maintainer import Sources, facts_from_fixture, facts_from_github, run_maintainer
 from .policy import PRFacts
-from .schemas import CATEGORIES
+from .schemas import CATEGORIES, Stats
 from .sentinel_config import AUTONOMY_ORDER, CONFIG_PATH, effective_autonomy, parse_config
 from .state import encode_state, get_previous_bot_review, resolve_bot_login, upsert_review_comment
 from .tool_registry import RepoEntry
@@ -105,7 +105,7 @@ def result_from_state(previous: PreviousReview, pr: PullRequestInfo, ci) -> Revi
         repo=pr.repo, pr_number=pr.pr_number, head_sha=pr.head_sha, status=previous.status,
         summary=previous.summary or "Re-evaluated from the stored review of this commit.",
         open_findings=previous.open_findings, resolved_findings=previous.resolved_findings,
-        unreviewed_files=previous.unreviewed_files, ci=ci,
+        unreviewed_files=previous.unreviewed_files, ci=ci, stats=previous.stats or Stats(),
         stop_reason=None if previous.status == "completed" else "Stored review did not complete.",
     )
 

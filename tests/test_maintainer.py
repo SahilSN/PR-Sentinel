@@ -408,6 +408,36 @@ def test_guard_escalates_instead_of_reverting_changed_files(env):
     assert out.action == "escalated" and not fake.pulls_created and fake.issues
 
 
+class RenameGuardGitHub(GuardGitHub):
+    """The autonomous merge renamed old.py -> new.py; a person later recreated old.py on main."""
+
+    def handler(self, request):
+        import httpx
+        path, method = request.url.path, request.method
+        if method == "GET" and path == "/repos/SahilSN/ern/commits/" + "9" * 40:
+            self.requests.append(request)
+            return httpx.Response(200, json={
+                "commit": {"message": "Rename module (#40)\n\nPR-Sentinel-Merge: run=abc"},
+                "parents": [{"sha": "8" * 40}],
+                "files": [{"filename": "new.py", "status": "renamed", "previous_filename": "old.py"}]})
+        if method == "GET" and path.startswith("/repos/SahilSN/ern/git/trees/"):
+            self.requests.append(request)
+            sha = path.rsplit("/", 1)[1]
+            tree = {"8" * 40: [{"path": "old.py", "sha": "o1"}],           # before the merge
+                    "9" * 40: [{"path": "new.py", "sha": "o1"}],           # the merge: renamed
+                    "7" * 40: [{"path": "new.py", "sha": "o1"}, {"path": "old.py", "sha": "human"}]}[sha]
+            return httpx.Response(200, json={"tree": [{**e, "type": "blob", "mode": "100644"} for e in tree],
+                                             "truncated": False})
+        return super().handler(request)
+
+
+def test_guard_checks_a_renames_old_path_before_reverting(env):
+    fake = RenameGuardGitHub()
+    out = guard.run_guard(fake.client(), "SahilSN/ern", "9" * 40, "failure", None, True)
+    assert out.action == "escalated" and "old.py" in out.detail
+    assert not fake.pulls_created and not fake.trees  # no revert that would overwrite the person's old.py
+
+
 def test_guard_ignores_human_merges_and_green_ci(env):
     fake = GuardGitHub()
     assert guard.run_guard(fake.client(), "SahilSN/ern", "9" * 40, "success", None, True).action == "ignored"
@@ -455,6 +485,19 @@ def test_chatops_explain_and_unknown_commands(env, tmp_path):
     chat(fake, tmp_path, "please /sentinel merge")
     chat(fake, tmp_path, "/sentinel rm-rf")
     assert len(fake.writes) == before
+
+
+def test_reused_review_keeps_its_stats_and_says_so(env, tmp_path):
+    data = load_fixture("m3_bugfix_ready_pr.json")
+    data["ci"]["check_runs"][0].update(status="in_progress", conclusion=None)
+    fake = FakeGitHub(data)
+    first = run(fake, tmp_path)
+    data["ci"]["check_runs"][0].update(status="completed", conclusion="success")
+    gate.main(["--repo", "SahilSN/ern", "--sha", "3" * 40, "--publish", "--fake-model", "--output-dir", str(tmp_path)],
+              gh=fake.client(), model=FakeModel())
+    second = json.loads((tmp_path / "run_result.json").read_text())
+    assert second["stats"]["llm_calls"] == first["stats"]["llm_calls"] > 0
+    assert any("no new model call" in n for n in second["triage"]["notes"])
 
 
 # ---------------- workflow wiring ----------------
