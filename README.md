@@ -1,6 +1,6 @@
 # PR Sentinel
 
-> An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress. Milestone 3 (on a branch, not yet merged) adds triage: it merges what's provably safe, fixes small bugs, and hands risky changes to the owner with a review guide.
+> An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress. Milestone 3 (on `main`, running at `shadow` autonomy) adds triage: it merges what's provably safe, fixes small bugs, and hands risky changes to the owner with a review guide.
 
 ## Current status
 _Last updated: 2026-10-24_
@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 101 tests on `main`, 223 on the Milestone 3 branch |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 223 tests pass (also in GitHub Actions CI on Python 3.11) |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -22,16 +22,16 @@ _Last updated: 2026-10-24_
 | GitHub Actions trigger | ✅ Runs on every same-repo PR; the `ANTHROPIC_API_KEY` secret is set |
 
 **Next up**
-1. See a live escalation (Phase C): e.g. a PR whose CI fails in a changed file for a reason the diff doesn't show.
-2. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
+1. Milestone 3 live checks: confirm the shadow-mode Triage section on the next real PR, then (after the repo settings below) run the `MILESTONE_3.md` §18 demo PRs at `merge` autonomy.
+2. See a live escalation (Phase C): e.g. a PR whose CI fails in a changed file for a reason the diff doesn't show.
+3. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
 3. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
 
 **Open PRs**
 - #5 `test/live-demo-null-deref` and #6 `test/live-demo-milestone2`: live demo PRs, marked **do not merge**, kept open as the record of the passing demos.
-- `feature/autonomous-triage`: Milestone 3, for team review before it goes to `main`.
 
-### Milestone 3 (branch `feature/autonomous-triage`, not merged; see `MILESTONE_3.md`)
-Everything below is **offline-tested only** (fixtures, the fake model, and an in-memory GitHub). Nothing has run live yet. Writes only happen at `fix`/`merge` autonomy, and the shipped config is `shadow`.
+### Milestone 3 (merged to `main` in #9; see `MILESTONE_3.md`)
+Everything below is **offline-tested** (fixtures, the fake model, and an in-memory GitHub), and the suite passes in CI. Nothing has run live against a real PR yet. The config on `main` is `autonomy: shadow`, so from the next PR the bot only says what it *would* do. Writes need `fix`/`merge` autonomy.
 
 | Phase | State | What it is |
 |---|---|---|
@@ -62,6 +62,7 @@ Everything below is **offline-tested only** (fixtures, the fake model, and an in
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Milestone 3 merged to `main` (#9).** Squash-merged after team sign-off on the safety-rule change. On #9, CI `tests` passed (223 tests, Python 3.11). Its `PR Sentinel review` check failed only because that PR's new workflow called `main`'s older CLI with a flag it didn't know yet (`--run-url`); that's resolved now that both are on `main`. Live effect: every new same-repo PR gets a **Triage** section and a "Would have" list (`autonomy: shadow`); nothing else is written. The labels exist, and demo PRs #5 and #6 are on `sentinel:hold`. To go further, a person must allow Actions write permissions and PR creation, and set the `SENTINEL_AUTONOMY` repo variable.
 - **2026-10-24 — Milestone 3: autonomous triage, fixes and merges (branch `feature/autonomous-triage`).** New modules: `sentinel_config.py` (policy file), `triage.py` (deterministic signals and combining), `policy.py` (gates, decision matrix, merge preconditions), `fixer.py` (fix proposals and patch validation), `executor.py` (the only writer), `maintainer.py` (orchestration), `gate.py` (merge gate), `guard.py` (post-merge revert and pause), and `chatops.py`. The review output and `run_result.json` gain optional `triage`, `bugfix_assessment`, `owner_review_guide`, `autofix` and `actions`; v1/v2 results still validate. The workflow adds the merge gate, post-merge guard and ChatOps jobs, with per-job permissions; it never cancels a run mid-write. `PROJECT.md` and `AGENTS.md` now say autonomous writes happen only through this policy engine, behind the autonomy setting and kill switch, as the team agreed. New dependency: PyYAML. Owner alerts go to SahilSN. Autofix verification uses the CI-dispatch fallback. The end-to-end tests caught one real bug, fixed before commit: the `sentinel:paused` circuit breaker was ignored because its blocker name started with `autonomy_`. Owner @mentions only happen at `fix`/`merge` autonomy, since a mention notifies people. 122 new tests (223 total). Offline only; nothing has run live.
 - **2026-10-24 — Milestone 2 live-verified; #7 and #8 merged; truncated file list surfaced.** (1) PR #6 (live demo, not merged) exercised CI evidence, related-file context, single-comment update and the dashboard artifact on real GitHub and Claude. Only escalation wasn't triggered. (2) Merged #7 (Sidharth Deepak): failed checks now show the first *failure-level* annotation instead of a runner warning, annotations are sorted failures-first before truncation, and warnings no longer count as failure locations. (3) Merged #8 (SahilSN): QA report `docs/qa/2026-10-24-milestone-2.md`, no blockers. (4) Follow-up from that report: when GitHub truncates the repository file list, `list_related_files` now says so (`file_list_truncated`) instead of silently offering an incomplete list. 101 tests.
 - **2026-10-24 — Milestone 2 merged to `main`.** Fast-forwarded `main` to `feature/ci-context-escalation` (the two entries below), then deleted the branch. From the next PR on, reviews read CI checks (new `checks: read` permission), can use `list_related_files`, escalate with reason codes, and attach `dashboard.html` to the run artifacts. The workflow's check is now named **PR Sentinel review**. All of this is tested offline (98 tests) but not yet live.
