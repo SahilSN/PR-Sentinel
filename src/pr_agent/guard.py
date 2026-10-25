@@ -65,7 +65,10 @@ def run_guard(gh: GitHubClient, repo: str, sha: str, conclusion: str, run_url: s
     files = commit.get("files", [])
     default_branch = gh.get_repo(repo).get("default_branch", "main")
     main_head = gh.get_ref_sha(repo, default_branch)
-    later = changed_since(gh, repo, sha, main_head, [f["filename"] for f in files])
+    # A rename's revert also restores the OLD path, so a later change there (e.g. a new file at that name) must
+    # block the revert too, or the revert PR would overwrite someone else's work.
+    paths = [f["filename"] for f in files] + [f["previous_filename"] for f in files if f.get("previous_filename")]
+    later = changed_since(gh, repo, sha, main_head, paths)
     link = f" ([failing run]({run_url}))" if run_url and run_url.startswith("https://github.com/") else ""
     out = GuardOutcome("escalated" if later else "reverted")
     if not publish:

@@ -406,6 +406,43 @@ def test_guard_escalates_instead_of_reverting_changed_files(env):
     assert out.action == "escalated" and not fake.pulls_created and fake.issues
 
 
+class RenameGuardGitHub(FakeGitHub):
+    """The autonomous merge renamed old.py -> new.py; later, a person created a new old.py on main."""
+
+    TREES = {"8" * 40: [("old.py", "b0")], "9" * 40: [("new.py", "b0")], "7" * 40: [("new.py", "b0"), ("old.py", "h1")]}
+
+    def __init__(self):
+        super().__init__({"repo": "SahilSN/ern", "pr_number": 31, "title": "t", "base_sha": "p" * 40,
+                          "head_sha": "m" * 40, "changed_files": []})
+
+    def handler(self, request):
+        httpx = __import__("httpx")
+        path, method = request.url.path, request.method
+        if method == "GET" and path == "/repos/SahilSN/ern/commits/" + "9" * 40:
+            self.requests.append(request)
+            return httpx.Response(200, json={
+                "commit": {"message": "Rename helper (#31)\n\nPR-Sentinel-Merge: run=abc"},
+                "parents": [{"sha": "8" * 40}],
+                "files": [{"filename": "new.py", "status": "renamed", "previous_filename": "old.py"}]})
+        if method == "GET" and path.startswith("/repos/SahilSN/ern/git/trees/"):
+            self.requests.append(request)
+            tree = [{"path": p, "type": "blob", "mode": "100644", "sha": b} for p, b in self.TREES[path.rsplit("/", 1)[1]]]
+            return httpx.Response(200, json={"tree": tree, "truncated": False})
+        if method == "GET" and path.startswith("/repos/SahilSN/ern/git/ref/heads/"):
+            self.requests.append(request)
+            return httpx.Response(200, json={"object": {"sha": "7" * 40}})
+        return super().handler(request)
+
+
+def test_guard_rename_checks_the_old_path_too(env):
+    """QA report docs/qa/2026-10-24-milestone-3.md: a revert must not overwrite a later file at the old name."""
+    fake = RenameGuardGitHub()
+    out = guard.run_guard(fake.client(), "SahilSN/ern", "9" * 40, "failure", None, True)
+    assert out.action == "escalated" and "old.py" in out.detail
+    assert not fake.pulls_created and not fake.trees  # no revert tree built at all
+    assert any("sentinel:paused" in i.get("labels", []) for i in fake.issues)  # still pauses merges
+
+
 def test_guard_ignores_human_merges_and_green_ci(env):
     fake = GuardGitHub()
     assert guard.run_guard(fake.client(), "SahilSN/ern", "9" * 40, "success", None, True).action == "ignored"
