@@ -8,4 +8,4 @@ def test_kind_is_slugified():
 
 
 def test_empty_kind_falls_back():
-    assert finding_id("app/a.py", "") == "app/a.py:"
+    assert finding_id("app/a.py", "") == "app/a.py:issue"
