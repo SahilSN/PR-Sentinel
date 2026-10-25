@@ -5,7 +5,7 @@
 **An autonomous maintainer for GitHub pull requests.** It reviews every PR with Claude, follows up on every push, merges what is provably safe, fixes small bugs itself, and hands anything risky to the owner with a review guide. It also knows when to stop.
 
 [![CI](https://github.com/SahilSN/PR-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/SahilSN/PR-Sentinel/actions/workflows/ci.yml)
-&nbsp;Python 3.11+ · Claude via the official `anthropic` SDK · GitHub Actions · 263 offline tests
+&nbsp;Python 3.11+ · Claude via the official `anthropic` SDK · GitHub Actions · 265 offline tests
 
 > *"It triages every PR, fixes what's safe to fix, merges what's proven safe, and hands everything else to a human with a review guide."*
 
@@ -94,7 +94,7 @@ Claude never gets a write tool. It classifies, investigates and *proposes*. Dete
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && pip install -e .
-pytest -q                                   # 263 tests, fully offline
+pytest -q                                   # 265 tests, fully offline
 ```
 
 ### Offline demos (no credentials, no network)
@@ -194,7 +194,7 @@ src/pr_agent/
 | Merge gate after CI | ✅ | ✅ #10 |
 | Autonomous merge (merge lock, CI dispatch on `main`) | ✅ | ✅ #23 |
 | Autofix push | ✅ | ✅ #24 |
-| Autofix → wait for CI → re-review → merge in one job (#26) | ✅ | ⏳ next autofix PR |
+| Autofix → wait for CI → re-review → merge in one job (#26, #29) | ✅ | ⏳ #28 stalled on the fixer's step budget (fixed in #29); re-run pending |
 | Escalation labels and review requests, post-merge revert, ChatOps | ✅ | ⏳ not yet triggered live |
 
 **Autonomy on this repo is currently `merge`.** Set the `SENTINEL_AUTONOMY` variable to cap it.
