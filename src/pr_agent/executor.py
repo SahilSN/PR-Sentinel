@@ -209,7 +209,11 @@ class Executor:
         if lock is None:
             return "locked", "another PR Sentinel merge held the lock", []
         try:
-            blockers = recheck()
+            try:
+                blockers = recheck()
+            except GitHubError as exc:  # can't verify the cap/pause: don't merge, and don't crash the run either
+                self.errors.append(f"merge re-check: {exc}")
+                return "error", f"could not re-check the daily cap and pause state ({exc})", []
             if blockers:
                 return "blocked", ", ".join(blockers), blockers
             status, detail = self.merge(**merge_args)
