@@ -804,3 +804,19 @@ def test_workflow_jobs_follow_ci_they_start():
     for name in ("review", "merge-gate", "chatops"):
         runs = " ".join(step.get("run", "") for step in jobs[name]["steps"])
         assert "--follow-ci" in runs and jobs[name]["timeout-minutes"] >= 10, name
+
+
+def test_job_timeouts_cover_follow_ci():
+    """--follow-ci worst case: review, wait for the autofix CI, gate review, wait for main CI, plus setup.
+    A job killed by its timeout is safe (the waits are read-only) but then the post-merge guard never runs."""
+    import pathlib
+
+    import yaml
+
+    from pr_agent.cli import CI_WAIT_SECONDS
+    from pr_agent.config import Limits
+
+    jobs = yaml.safe_load((pathlib.Path(__file__).parents[1] / ".github/workflows/pr-agent.yml").read_text())["jobs"]
+    worst = 2 * Limits().max_runtime_seconds + 2 * CI_WAIT_SECONDS + 180  # 3 min for checkout + pip install
+    for name in ("review", "merge-gate", "chatops"):
+        assert jobs[name]["timeout-minutes"] * 60 >= worst, name

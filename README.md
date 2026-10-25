@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 257 tests pass (also in GitHub Actions CI on Python 3.11) |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 263 tests pass (also in GitHub Actions CI on Python 3.11) |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -62,6 +62,12 @@ Everything below is offline-tested (fixtures, the fake model, and an in-memory G
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — First live autonomous merge (#23); the autofix chain fixed (#26); job timeouts.**
+  - **Live at `merge` autonomy:** the policy file was switched to `merge` in 9b65378. PR Sentinel then merged docs PR #23 by itself (T0, SHA-pinned squash with the merge trailer, under the merge lock), dispatched CI on `main`, and released the lock. On #24 it found a wrong test assertion and pushed a correct autofix (`f639848`), and the dispatched CI passed. But #24 then stalled. **CI started with `GITHUB_TOKEN` fires no `workflow_run`**, so the merge gate never ran (QA report `docs/qa/2026-10-24-milestone-3-live-gate.md`, merged by the bot as #25). The same applied to the post-merge guard after the bot's own merges. The bot's autofix push also queued `pull_request` runs as `action_required` (they wait for a maintainer to approve them).
+  - **#26 (Sidharth Deepak):** with `--follow-ci`, the job that starts CI itself now waits for it (read-only, up to 6 minutes). After an autofix it runs the merge-gate pass (fresh review, every precondition, merge under the lock). After a merge it waits for `main` CI and runs the post-merge guard if it failed.
+  - **Follow-up:** the worst case (review, autofix CI wait, gate review, `main` CI wait) didn't fit #26's 15-minute job timeout. Raised to 20, with a test that derives the minimum from the actual limits.
+
+  263 tests. To verify live: a fresh PR like #24 should go from autofix to merged in one job.
 - **2026-10-24 — Secret redaction (#20), lock re-check robustness (#22), QA (#21); full re-check under the merge lock.**
   - **#20 (Sidharth Deepak):** on live PR #18, Claude's finding quoted the committed password, which reached the comment, the state block and `run_result.json`. Detected secret values are now redacted everywhere before anything is written. Follow-up: redaction walks the data and replaces only text values. The old version replaced inside the serialized JSON, so a "secret" equal to a key name such as `open_findings` could silently drop all findings.
   - **#22 (Sidharth Deepak):** a GitHub error during the under-lock re-check no longer crashes the run; it fails closed and the comment says why.

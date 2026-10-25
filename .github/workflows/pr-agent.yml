@@ -25,7 +25,7 @@ jobs:
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'sentinel:hold' && github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # includes waiting for CI it started itself (--follow-ci)
+    timeout-minutes: 20  # review + wait for its CI + gate review + wait for main CI (see test_job_timeouts_cover_follow_ci)
     permissions:
       contents: write       # autofix commits, merges
       pull-requests: write  # comment, merge, review requests
@@ -75,7 +75,7 @@ jobs:
       github.event.workflow_run.head_branch != github.event.repository.default_branch &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # includes waiting for CI it started itself (--follow-ci)
+    timeout-minutes: 20  # review + wait for its CI + gate review + wait for main CI (see test_job_timeouts_cover_follow_ci)
     permissions:
       contents: write
       pull-requests: write
@@ -152,7 +152,7 @@ jobs:
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/sentinel ')
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # includes waiting for CI it started itself (--follow-ci)
+    timeout-minutes: 20  # review + wait for its CI + gate review + wait for main CI (see test_job_timeouts_cover_follow_ci)
     permissions:
       contents: write
       pull-requests: write
