@@ -1,5 +1,7 @@
 # PR Sentinel
 
+**c0mpiled-16 Hackathon: Aaryan Panda, Sid Deepak, Sahil Nayak**
+
 **An autonomous maintainer for GitHub pull requests.** It reviews every PR with Claude, follows up on every push, merges what is provably safe, fixes small bugs itself, and hands anything risky to the owner with a review guide. It also knows when to stop.
 
 [![CI](https://github.com/SahilSN/PR-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/SahilSN/PR-Sentinel/actions/workflows/ci.yml)
