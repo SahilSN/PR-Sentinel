@@ -5,3 +5,4 @@
 3. Live demo
 4. How it works (tech)
 5. What's next
+6. Q&A and backup recording
