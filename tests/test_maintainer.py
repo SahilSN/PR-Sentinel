@@ -518,3 +518,7 @@ def test_workflow_routes_ci_runs_to_the_right_job():
     assert jobs["merge-gate"]["concurrency"]["group"].startswith("pr-agent-${{ github.event.workflow_run.pull_requests[0].number")
     assert jobs["review"]["concurrency"]["group"] == "pr-agent-${{ github.event.pull_request.number }}"
     assert all(job["concurrency"]["cancel-in-progress"] is False for job in jobs.values())
+    # Every job that can merge dispatches CI afterwards, so it needs `actions: write` (or the dispatch gets a 403
+    # and the post-merge guard never runs).
+    for name in ("review", "merge-gate", "chatops"):
+        assert jobs[name]["permissions"].get("actions") == "write", name

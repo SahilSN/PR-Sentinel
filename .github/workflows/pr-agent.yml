@@ -81,6 +81,7 @@ jobs:
       pull-requests: write
       issues: write
       checks: read
+      actions: write        # most autonomous merges happen here, and each one dispatches CI on the default branch
     # Same group as the PR's review job: CI often finishes before the review does, and running both at once
     # means two Claude reviews and, on a PR's first push, two bot comments. Dispatched runs have no PR attached
     # (the review that dispatched them has already finished), so they fall back to the commit.
