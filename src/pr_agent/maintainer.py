@@ -274,8 +274,11 @@ def run_maintainer(
     if executor.allowed("fix"):
         executor.add_labels([f"category:{tri.category}", f"size:{tri.size}"], facts.labels)
     if decision in ("escalate_owner", "block"):
-        unchanged = previous is not None and previous.decision == decision and \
-            _signature(previous.triage) == _signature(tri)
+        alerted = previous is not None and any(
+            a.type == "request_review" or (a.type == "label" and {"sentinel:needs-owner", "sentinel:blocked"}
+                                           & set((a.model_extra or {}).get("labels") or []))
+            for a in previous.actions)
+        unchanged = alerted and previous.decision == decision and _signature(previous.triage) == _signature(tri)
         if unchanged:
             notes.append("Owner already alerted; the reasons haven't changed.")
         else:
@@ -316,6 +319,11 @@ def run_maintainer(
         tri.blocked_by = real
 
     tri.decision = decision
+    reused = mr is None and previous is not None and previous.head_sha == pr.head_sha
+    if reused and record is None and decision in ("fix_then_merge", "suggest_fix") and previous.autofix is not None:
+        record = previous.autofix  # the fixer only runs on a fresh review; keep what that review proposed
+        carried = [w for w in (previous.triage.would_have or []) if "autofix" in w] if previous.triage else []
+        executor.would_have = carried + executor.would_have
     tri.would_have = executor.would_have or None
     tri.notes = notes + [f"Write failed: {e}" for e in executor.errors]
     result.triage = tri

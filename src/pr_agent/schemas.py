@@ -282,6 +282,7 @@ class PreviousReview(BaseModel):
     stats: Stats | None = None  # the review's own usage, shown again when a later run reuses it
     triage: TriageResult | None = None
     decision: Decision | None = None
+    autofix: AutofixRecord | None = None  # what the review of this commit proposed (shown again on re-checks)
     autofix_attempts: int = 0
     failed_fix_ids: list[str] = Field(default_factory=list)  # findings an autofix didn't fix (CI still red)
     human_override: bool = False

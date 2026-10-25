@@ -436,6 +436,7 @@ def test_guard_checks_a_renames_old_path_before_reverting(env):
     out = guard.run_guard(fake.client(), "SahilSN/ern", "9" * 40, "failure", None, True)
     assert out.action == "escalated" and "old.py" in out.detail
     assert not fake.pulls_created and not fake.trees  # no revert that would overwrite the person's old.py
+    assert any("sentinel:paused" in i.get("labels", []) for i in fake.issues)  # still pauses merges (from #19)
 
 
 def test_guard_ignores_human_merges_and_green_ci(env):
@@ -522,3 +523,29 @@ def test_workflow_routes_ci_runs_to_the_right_job():
     # and the post-merge guard never runs).
     for name in ("review", "merge-gate", "chatops"):
         assert jobs[name]["permissions"].get("actions") == "write", name
+
+
+def test_shadow_never_claims_the_owner_was_already_alerted(env, tmp_path):
+    """Live PRs #16-#18: at shadow, the re-check said "Owner already alerted" although no alert was ever sent."""
+    fake = FakeGitHub({**load_fixture("m3_architecture_pr.json"), "sentinel_config": SHADOW})
+    run(fake, tmp_path)
+    second = run(fake, tmp_path, "--force")
+    assert not any("already alerted" in n for n in second["triage"]["notes"])
+    assert any("request review" in w for w in second["triage"]["would_have"])
+    assert fake.reviewers == [] and "sentinel:needs-owner" not in fake.labels
+
+
+def test_merge_gate_recheck_keeps_the_proposed_autofix(env, tmp_path):
+    """Live PR #15: the gate's re-check after CI dropped the review's 'would push an autofix'."""
+    data = {**load_fixture("m3_bugfix_autofix_pr.json"), "sentinel_config": SHADOW}
+    fake = FakeGitHub(data)
+    first = run(fake, tmp_path)
+    assert any("autofix" in w for w in first["triage"]["would_have"])
+    data["ci"]["check_runs"][0].update(status="completed", conclusion="failure")
+    gate.main(["--repo", "SahilSN/ern", "--sha", "2" * 40, "--publish", "--fake-model", "--output-dir", str(tmp_path)],
+              gh=fake.client(), model=FakeModel())
+    second = json.loads((tmp_path / "run_result.json").read_text())
+    assert second["triage"]["decision"] == "fix_then_merge"
+    assert any("autofix" in w for w in second["triage"]["would_have"])
+    assert second["autofix"]["patch_preview"] and "### Suggested fix" in fake.comments[0]["body"]
+    assert non_comment_writes(fake) == []

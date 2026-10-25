@@ -33,6 +33,7 @@ def encode_state(result: ReviewResult, extras=None, previous: PreviousReview | N
         stats=result.stats,
         triage=result.triage,
         decision=result.triage.decision if result.triage else None,
+        autofix=result.autofix,
         autofix_attempts=extras.autofix_attempts if extras else 0,
         failed_fix_ids=extras.failed_fix_ids if extras else [],
         human_override=extras.human_override if extras else False,

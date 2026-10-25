@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 239 tests pass (also in GitHub Actions CI on Python 3.11) |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 241 tests pass (also in GitHub Actions CI on Python 3.11) |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -31,7 +31,7 @@ _Last updated: 2026-10-24_
 - #5 `test/live-demo-null-deref` and #6 `test/live-demo-milestone2`: live demo PRs, marked **do not merge**, kept open as the record of the passing demos.
 
 ### Milestone 3 (merged to `main` in #9; see `MILESTONE_3.md`)
-Everything below is offline-tested (fixtures, the fake model, and an in-memory GitHub), and the suite passes in CI. **Live so far, at `shadow` (PR #10):** triage classified a docs PR as T0 and reported "would merge"; when CI finished, the **merge gate** fired from `workflow_run`, found the PR, re-checked it without a new model call, and updated the same comment. No writes besides the comment. Not yet live: autofix, real merges, escalation labels, the post-merge guard, and ChatOps. GPT Astral's QA (`docs/qa/2026-10-24-milestone-3.md`) recommends staying at `shadow`/`fix` until those are tested on disposable PRs.
+Everything below is offline-tested (fixtures, the fake model, and an in-memory GitHub), and the suite passes in CI. **Live so far, at `shadow` (PRs #10, #14–#18):** real Claude plus the deterministic floor triaged every test PR correctly: docs → T0 would merge (#14); added tests with a real wrong-assert bug Claude confirmed from the code → T1 fix-then-merge (#15); PR Sentinel's own code → T3 owner review, where the floor overruled Claude's T2 (#16); "docs: fix typo" that adds `pytest -q || true` to CI → T3 (#17); a committed DB password → BLOCK, path and line only (#18). The **merge gate** fires on CI completion and re-checks without a new model call. No writes besides the comment. Not yet live: autofix pushes, real merges, escalation labels, the post-merge guard, and ChatOps. GPT Astral's QA (`docs/qa/2026-10-24-milestone-3.md`, `…-followup.md`) recommends staying below `merge`. **Open finding:** since #11, merges from different PRs aren't serialized repo-wide (only per PR), so two gates could merge at once and exceed the daily cap. Needs a design decision before `merge` autonomy.
 
 | Phase | State | What it is |
 |---|---|---|
@@ -62,6 +62,7 @@ Everything below is offline-tested (fixtures, the fake model, and an in-memory G
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Live shadow results (#14–#18); QA follow-up merged (#13); two display fixes.** (1) zylqheonix's five live test PRs (#14–#18, not for merging) were all triaged correctly at `shadow` (see Current status). (2) Merged #13 (SahilSN): QA follow-up. The rename fix is confirmed; new high finding: merges aren't serialized repo-wide since #11 (open, needs a design decision). (3) Opened #19 for `fix/guard-rename-safety` and marked it superseded: it duplicates 3945040 and conflicts with `main`. Its extra assertion (the guard still opens the pause issue when it escalates) was added to `main`'s test. (4) Fixed two bugs the live runs showed. At `shadow`, re-checks said "Owner already alerted" though no alert had been sent; that note now appears only after a real alert. And the merge gate's re-check dropped the review's proposed autofix ("would push an autofix" and the suggested patch); the state block now keeps the proposal, and re-checks show it again. Both regression tests fail on the old code. 241 tests.
 - **2026-10-24 — Triage floor gaps, guard trigger, gate race (#11); merge-gate permission.** (1) Merged #11 (Sidharth Deepak), three real Milestone 3 bugs:
   - **Claude's label could pull a risky change into auto-merge.** E.g. `os.system(...)` called "formatting", or a Makefile `curl … | sh` called "docs". Now `docs`/`comments_only`/`formatting`/`tests_only`/`dependency_patch` count only if the diff shows them; unexplained code changes become `unknown` (T2). Unrecognized file types (Makefile, `.html`, extensionless scripts) set a T2 floor, docs are recognized by extension only, and a changed shebang or `coding:` line counts as a code change.
   - **The post-merge guard could never fire.** Merges made with `GITHUB_TOKEN` start no push workflows, so the executor now dispatches CI on the default branch after a merge, and the guard also listens for dispatched runs.
