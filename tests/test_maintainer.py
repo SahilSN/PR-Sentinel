@@ -669,3 +669,56 @@ def test_github_error_during_locked_recheck_fails_closed_without_crashing(env, t
     assert any("could not re-check" in n for n in result["triage"]["notes"])
     assert len(fake.comments) == 1  # the PR still gets its updated comment
     assert any(r.method == "DELETE" and "merge-lock" in r.url.path for r in fake.requests)  # lock released
+
+
+def _hold(fake):
+    fake.labels.append("sentinel:hold")
+
+
+def _changes_requested(fake):
+    fake.fixture["pr_state"]["reviews"] = [{"user": {"login": "SahilSN"}, "state": "CHANGES_REQUESTED"}]
+
+
+def _closed(fake):
+    fake.fixture["pr_state"]["state"] = "closed"
+
+
+def _new_push(fake):
+    fake.fixture["head_sha"] = "d" * 40
+
+
+def _ci_red(fake):
+    fake.fixture["ci"] = {"check_runs": [{"id": 9, "name": "tests", "status": "completed", "conclusion": "failure",
+                                          "head_sha": fake.fixture["head_sha"], "output": {}}]}
+
+
+@pytest.mark.parametrize("change,blocker", [
+    (_hold, "on_hold"), (_changes_requested, "changes_requested"), (_closed, "pr_not_open"),
+    (_new_push, "stale_head_sha"), (_ci_red, "ci_failed:tests"),
+])
+def test_everything_is_rechecked_under_the_lock(env, tmp_path, change, blocker):
+    """QA docs/qa/2026-10-24-milestone-3-lock-recheck.md: a person can stop a PR while it waits for the lock."""
+    data = load_fixture("m3_bugfix_ready_pr.json")  # T1 code PR with green CI: merges if nothing changes
+    fake = FakeGitHub(data)
+    fake.on_lock = change
+    result = run(fake, tmp_path)
+    assert not fake.merged, blocker
+    assert blocker in result["triage"]["blocked_by"]
+    assert fake.lock_events == ["acquire", "release"]
+
+
+def test_unchanged_pr_still_merges_after_the_full_recheck(env, tmp_path):
+    fake = FakeGitHub(load_fixture("m3_bugfix_ready_pr.json"))
+    fake.on_lock = lambda f: None
+    run(fake, tmp_path)
+    assert fake.merged and fake.lock_events == ["acquire", "merge", "release"]
+    assert '"event": "merge_recheck", "blockers": []' in (tmp_path / "actions.jsonl").read_text()
+
+
+def test_redaction_only_touches_text_values():
+    from pr_agent.maintainer import redact_secrets
+    from pr_agent.schemas import ReviewResult
+    r = ReviewResult(repo="o/r", pr_number=1, head_sha="h", status="completed", summary="key open_findings here",
+                     open_findings=[FINDING])
+    out = redact_secrets(r, ["open_findings"])  # a "secret" that equals a JSON key name
+    assert out.open_findings == [FINDING] and out.summary == "key [redacted] here"

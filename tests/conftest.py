@@ -42,6 +42,7 @@ class FakeGitHub:
         self.lock_events: list[str] = []  # acquire/takeover/release, in order, interleaved with "merge"
         self.closed_pulls: list[dict] = list(fixture.get("closed_pulls", []))
         self.commit_date = "2026-10-24T12:00:00Z"
+        self.on_lock = None
 
     def raw_pull(self) -> dict:
         f, st = self.fixture, self.fixture.get("pr_state") or {}
@@ -209,6 +210,8 @@ class FakeGitHub:
             self.refs[body["ref"]] = body["sha"]
             if body["ref"] == "refs/sentinel/merge-lock":
                 self.lock_events.append("acquire")
+                if self.on_lock:  # simulate someone acting while this run waited for the lock
+                    self.on_lock(self)
             return httpx.Response(201, json={})
         if method == "POST" and path.startswith(f"/repos/{repo}/actions/workflows/") and path.endswith("/dispatches"):
             self.dispatches.append({"workflow": path.split("/")[-2], **body})

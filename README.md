@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 247 tests pass (also in GitHub Actions CI on Python 3.11) |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 257 tests pass (also in GitHub Actions CI on Python 3.11) |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -31,7 +31,7 @@ _Last updated: 2026-10-24_
 - #5 `test/live-demo-null-deref` and #6 `test/live-demo-milestone2`: live demo PRs, marked **do not merge**, kept open as the record of the passing demos.
 
 ### Milestone 3 (merged to `main` in #9; see `MILESTONE_3.md`)
-Everything below is offline-tested (fixtures, the fake model, and an in-memory GitHub), and the suite passes in CI. **Live so far, at `shadow` (PRs #10, #14–#18):** real Claude plus the deterministic floor triaged every test PR correctly: docs → T0 would merge (#14); added tests with a real wrong-assert bug Claude confirmed from the code → T1 fix-then-merge (#15); PR Sentinel's own code → T3 owner review, where the floor overruled Claude's T2 (#16); "docs: fix typo" that adds `pytest -q || true` to CI → T3 (#17); a committed DB password → BLOCK, path and line only (#18). The **merge gate** fires on CI completion and re-checks without a new model call. No writes besides the comment. Not yet live: autofix pushes, real merges, escalation labels, the post-merge guard, and ChatOps. GPT Astral's QA (`docs/qa/2026-10-24-milestone-3.md`, `…-followup.md`) recommends staying below `merge`. The follow-up's finding (merges weren't serialized repo-wide since #11) is fixed with a repository-wide merge lock (see Changelog). It still needs live verification before `merge` autonomy.
+Everything below is offline-tested (fixtures, the fake model, and an in-memory GitHub), and the suite passes in CI. **Live so far, at `shadow` (PRs #10, #14–#18):** real Claude plus the deterministic floor triaged every test PR correctly: docs → T0 would merge (#14); added tests with a real wrong-assert bug Claude confirmed from the code → T1 fix-then-merge (#15); PR Sentinel's own code → T3 owner review, where the floor overruled Claude's T2 (#16); "docs: fix typo" that adds `pytest -q || true` to CI → T3 (#17); a committed DB password → BLOCK, path and line only (#18). The **merge gate** fires on CI completion and re-checks without a new model call. No writes besides the comment. Not yet live: autofix pushes, real merges, escalation labels, the post-merge guard, and ChatOps. GPT Astral's QA (`docs/qa/2026-10-24-milestone-3.md`, `…-followup.md`) recommends staying below `merge`. Both QA findings since then are fixed: merges are serialized repo-wide by a merge lock, and every merge precondition is re-checked with fresh GitHub data while holding it (see Changelog). This still needs live verification before `merge` autonomy.
 
 | Phase | State | What it is |
 |---|---|---|
@@ -62,6 +62,13 @@ Everything below is offline-tested (fixtures, the fake model, and an in-memory G
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Secret redaction (#20), lock re-check robustness (#22), QA (#21); full re-check under the merge lock.**
+  - **#20 (Sidharth Deepak):** on live PR #18, Claude's finding quoted the committed password, which reached the comment, the state block and `run_result.json`. Detected secret values are now redacted everywhere before anything is written. Follow-up: redaction walks the data and replaces only text values. The old version replaced inside the serialized JSON, so a "secret" equal to a key name such as `open_findings` could silently drop all findings.
+  - **#22 (Sidharth Deepak):** a GitHub error during the under-lock re-check no longer crashes the run; it fails closed and the comment says why.
+  - **#21 (SahilSN):** QA report. Finding: the lock only re-checked the daily cap and pause, so a hold label, a "changes requested" review, a closed PR, a new push or red CI that happened while a PR waited for the lock wasn't seen.
+  - **Follow-up for #21:** fixed. Under the lock, the PR, labels, reviews, trust, mergeability and CI are re-fetched and every merge precondition re-run. Waiting-type blockers (CI still running) give "waiting"; anything else, "review only".
+
+  The new tests fail on the old code. 257 tests.
 - **2026-10-24 — Repository-wide merge lock.** Fixes the QA follow-up finding (`docs/qa/2026-10-24-milestone-3-followup.md`): since #11, merges from different PRs weren't serialized, so two could run at once and both pass the daily cap. Every autonomous merge now holds a lock first. The lock is a git ref, `refs/sentinel/merge-lock`, outside `refs/heads`, so it's not a branch.
   - **Acquire:** atomic, because GitHub refuses to create an existing ref. A lock older than 10 minutes (a crashed run) is taken over with a fast-forward-only update, so two runs can't both take it.
   - **Under the lock:** the daily cap is re-counted from the pulls list (search can lag) and the pause issue is re-checked. Then the merge, the `sentinel:auto-merged` label and the CI dispatch.
@@ -225,6 +232,7 @@ The `run_result.json` format is exactly PROJECT.md §6.4, plus one additive fiel
 - Related-file discovery resolves Python imports. For other languages it only offers same-directory files.
 - Milestone 3: one workflow job both calls Claude and writes. The recommended split into "decide" and "act" jobs (`MILESTONE_3.md` §15) isn't done. Claude still has no write tools, and every write is decided by deterministic code.
 - Milestone 3: autofix pushes use `GITHUB_TOKEN` plus a CI dispatch. That push doesn't trigger a new review, so the merge gate reviews the autofix commit before merging.
+- Milestone 3: the policy file isn't re-read under the merge lock (the kill-switch variable is fixed for the job anyway).
 - Milestone 3: a PR that loses the merge lock for the full 90-second wait isn't retried until its next event (CI, push or label). The daily cap is counted from the 100 most recently updated closed PRs.
 - Milestone 3: `callers_checked` in a bug-fix assessment is Claude's claim and isn't verified independently. Loosened test tolerances aren't detected as test weakening.
 - Request timeouts are httpx per-phase timeouts (connect/read/write), not a total for the whole response. A server trickling bytes could in theory stretch a call past the runtime ceiling. That's unlikely with the Anthropic API, and the Actions `timeout-minutes: 5` is the outer backstop.

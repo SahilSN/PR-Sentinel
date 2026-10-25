@@ -206,7 +206,11 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
                                           default_branch)
             sources = Sources(base_text=fetch(pr.base_sha), head_text=fetch(pr.head_sha),
                               list_repo_files=list_repo_files,
-                              modes=lambda: tree_modes(gh, args.repo, pr.head_sha))
+                              modes=lambda: tree_modes(gh, args.repo, pr.head_sha),
+                              refetch_facts=lambda: facts_from_github(gh, args.repo, gh.get_pull(args.repo, args.pr),
+                                                                      cfg, bot_login, default_branch),
+                              fetch_ci=None if args.no_ci else lambda: fetch_ci_report(gh, args.repo, pr.head_sha,
+                                                                                       settings))
     except GitHubError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILED

@@ -5,7 +5,6 @@ Claude only classifies and proposes. Every write decision is made here and in po
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -36,6 +35,9 @@ class Sources:
     head_text: Callable[[str], str | None] = lambda p: None
     list_repo_files: Callable[[], object] | None = None
     modes: Callable[[], dict[str, str]] = dict
+    # Fresh GitHub reads, used to re-check every merge precondition while holding the merge lock.
+    refetch_facts: Callable[[], PRFacts] | None = None
+    fetch_ci: Callable[[], object] | None = None
 
 
 @dataclass
@@ -295,6 +297,22 @@ def run_maintainer(
         real = [b for b in blockers if not b.startswith("autonomy_")]
         tracer.log("merge_gate", blockers=real)
         if not real:
+            def full_recheck() -> list[str]:
+                """Everything may have changed while we waited for the lock: a hold label, a "changes requested"
+                review, a new push, a closed PR, red CI. Reload it all and re-run every precondition."""
+                blockers = fresh_merge_blockers(executor, config)  # cap (pulls list) and pause
+                if sources.refetch_facts is None:
+                    return blockers
+                now = sources.refetch_facts()
+                now.merges_today = 0  # counted above from the pulls list; search can lag behind
+                if sources.fetch_ci is not None:
+                    result.ci = sources.fetch_ci()
+                blockers += [b for b in merge_blockers(tri, result, now, config, autonomy,
+                                                       decided_for_sha=result.head_sha, owner_override=owner_override)
+                             if not b.startswith("autonomy_")]
+                tracer.log("merge_recheck", blockers=sorted(set(blockers)))
+                return sorted(set(blockers))
+
             def after_merge():
                 executor.add_labels(["sentinel:auto-merged"], facts.labels)
                 # A merge made with GITHUB_TOKEN doesn't start push workflows, so CI on the default branch (and the
@@ -302,7 +320,7 @@ def run_maintainer(
                 executor.dispatch_ci(config.ci_workflow, facts.default_branch)
 
             status, detail, fresh = executor.locked_merge(
-                tree_sha=_tree_of(executor, facts.head_sha), recheck=lambda: fresh_merge_blockers(executor, config),
+                tree_sha=_tree_of(executor, facts.head_sha), recheck=full_recheck,
                 after_merge=after_merge, head_sha=facts.head_sha, title=facts.title or pr.title,
                 method=config.merge.method, category=tri.category, tier=tri.tier,
                 checks=config.merge.required_checks, run_url=run_url)
@@ -311,8 +329,14 @@ def run_maintainer(
                 decision, tri.waiting_for = "waiting", ["another PR Sentinel merge to finish (repository-wide merge lock)"]
                 notes.append("Another merge held the lock; this PR is re-checked on its next event (CI, push or label).")
             elif status == "blocked":
-                decision = "review_only"
-                real = real + fresh
+                real = fresh  # the fresh re-check under the lock supersedes the earlier one
+                if only_waiting(fresh):
+                    decision = "waiting"
+                    tri.waiting_for = [WAIT_TEXT[b].format(sha=facts.head_sha[:7],
+                                                           checks=", ".join(config.merge.required_checks)) for b in fresh]
+                else:
+                    decision = "review_only"
+                    notes.append("Something changed while waiting for the merge lock; not merging.")
             elif status == "not_mergeable":
                 decision, tri.waiting_for = "waiting", ["GitHub to report the PR as mergeable"]
             elif status in ("stale", "error"):
@@ -347,10 +371,21 @@ def run_maintainer(
 def redact_secrets(result: ReviewResult, values: list[str]) -> ReviewResult:
     """Claude reads the diff, so it can quote a committed secret in its summary, findings or review guide.
     Strip every detected value before anything is rendered, stored in the state block, or written to run_result."""
-    data = result.model_dump_json()
-    for value in sorted(set(values), key=len, reverse=True):
-        data = data.replace(json.dumps(value)[1:-1], "[redacted]")
-    return ReviewResult.model_validate_json(data)
+    ordered = sorted(set(values), key=len, reverse=True)
+
+    def scrub(node):
+        # Only text values: replacing inside the serialized JSON could hit a key name and corrupt the result.
+        if isinstance(node, str):
+            for value in ordered:
+                node = node.replace(value, "[redacted]")
+            return node
+        if isinstance(node, list):
+            return [scrub(x) for x in node]
+        if isinstance(node, dict):
+            return {k: scrub(v) for k, v in node.items()}
+        return node
+
+    return ReviewResult.model_validate(scrub(result.model_dump()))
 
 
 def count_recent_auto_merges(pulls: list[dict], now: datetime | None = None) -> int:
