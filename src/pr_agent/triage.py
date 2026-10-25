@@ -61,6 +61,7 @@ DOC_CLAIM = re.compile(r"^\s*(?:docs?|typo|readme|format(?:ting)?|comments?|styl
                        r"documentation only|whitespace|formatting only)\b", re.I)
 REVERT_TEXT = re.compile(r"^\s*Revert\b|This reverts commit [0-9a-f]{7,40}", re.I | re.M)
 REL_LINK = re.compile(r"\]\(([^)\s#]+)(?:#[^)]*)?\)")
+QUOTED_VALUE = re.compile(r"[\"']([^\"'\s]{8,})[\"']")
 INTERPRETER_LINE = re.compile(r"^#!|^[ \t\f]*#.*?coding[:=]")
 # Only the diff can show these; Claude claiming one adds nothing. The first three also can't explain a code change.
 CONTENT_ONLY = {"docs", "comments_only", "formatting"}
@@ -238,6 +239,7 @@ class DeterministicTriage:
     code_change: bool = False
     protected: list[str] = field(default_factory=list)
     block_reasons: list[str] = field(default_factory=list)
+    secret_values: list[str] = field(default_factory=list)  # never stored or shown: only used to redact echoes
     broken_links: list[str] = field(default_factory=list)
 
     def add(self, category: str, tier: str | None = None) -> None:
@@ -271,7 +273,9 @@ def deterministic_triage(
     for f in files:
         for line_no, text in added_lines(f.patch):
             for name, pattern in SECRET_PATTERNS:
-                if pattern.search(text):
+                m = pattern.search(text)
+                if m:
+                    t.secret_values += QUOTED_VALUE.findall(m.group(0)) or [m.group(0)]
                     t.block_reasons.append(f"possible secret ({name}) at {f.path}:{line_no}")
                     t.add("secrets")
                     t.signal("secret", f"{f.path}:{line_no}", f"{name} pattern (value not shown)", floor="BLOCK")
