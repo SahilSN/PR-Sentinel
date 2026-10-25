@@ -95,7 +95,9 @@ def test_docs_pr_merges_sha_pinned(env, tmp_path):
     assert fake.merge_call["commit_title"] == "docs: fix typo in README (#31)"
     assert "PR-Sentinel-Merge: run=" in fake.merge_call["commit_message"]
     assert "sentinel:auto-merged" in fake.labels
-    assert [a["type"] for a in result["actions"]][-2:] == ["merge", "label"]
+    assert [a["type"] for a in result["actions"]][-3:] == ["merge", "label", "ci_dispatch"]
+    # GITHUB_TOKEN merges start no push workflows: CI on main (and the post-merge guard) must be dispatched.
+    assert fake.dispatches == [{"workflow": "ci.yml", "ref": "main"}]
     assert "### Actions taken" in fake.comments[0]["body"]
 
 
@@ -496,3 +498,23 @@ def test_reused_review_keeps_its_stats_and_says_so(env, tmp_path):
     second = json.loads((tmp_path / "run_result.json").read_text())
     assert second["stats"]["llm_calls"] == first["stats"]["llm_calls"] > 0
     assert any("no new model call" in n for n in second["triage"]["notes"])
+
+
+# ---------------- workflow wiring ----------------
+
+
+def test_workflow_routes_ci_runs_to_the_right_job():
+    import pathlib
+
+    import yaml
+
+    jobs = yaml.safe_load((pathlib.Path(__file__).parents[1] / ".github/workflows/pr-agent.yml").read_text())["jobs"]
+    gate_if, guard_if = jobs["merge-gate"]["if"], jobs["post-merge-guard"]["if"]
+    # The guard must also see CI that PR Sentinel dispatched on main after a merge (GITHUB_TOKEN starts no push runs).
+    assert "workflow_run.event == 'workflow_dispatch'" in guard_if
+    # ...and those default-branch runs are not PR commits, so the merge gate skips them.
+    assert "head_branch != github.event.repository.default_branch" in gate_if
+    # The gate shares the PR's concurrency group with the review job, so they never run at the same time.
+    assert jobs["merge-gate"]["concurrency"]["group"].startswith("pr-agent-${{ github.event.workflow_run.pull_requests[0].number")
+    assert jobs["review"]["concurrency"]["group"] == "pr-agent-${{ github.event.pull_request.number }}"
+    assert all(job["concurrency"]["cancel-in-progress"] is False for job in jobs.values())

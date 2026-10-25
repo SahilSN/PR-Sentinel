@@ -61,6 +61,10 @@ DOC_CLAIM = re.compile(r"^\s*(?:docs?|typo|readme|format(?:ting)?|comments?|styl
                        r"documentation only|whitespace|formatting only)\b", re.I)
 REVERT_TEXT = re.compile(r"^\s*Revert\b|This reverts commit [0-9a-f]{7,40}", re.I | re.M)
 REL_LINK = re.compile(r"\]\(([^)\s#]+)(?:#[^)]*)?\)")
+INTERPRETER_LINE = re.compile(r"^#!|^[ \t\f]*#.*?coding[:=]")
+# Only the diff can show these; Claude claiming one adds nothing. The first three also can't explain a code change.
+CONTENT_ONLY = {"docs", "comments_only", "formatting"}
+DETECTED_ONLY = CONTENT_ONLY | {"tests_only", "dependency_patch"}
 
 
 def tier_max(*tiers: str | None) -> str:
@@ -112,8 +116,8 @@ def file_kinds(path: str, config: SentinelConfig) -> set[str]:
                                                          "**/*.test.js", "**/*.test.ts"])
     if is_test:
         kinds.add("test")
-    if (ext in DOC_EXT or path.startswith("docs/") or base.upper().startswith(("README", "CHANGELOG"))) \
-            and not is_test and ext not in CODE_EXT:
+    # Docs by extension only: `docs/index.html` or `docs/build` can run or render code, so they aren't "doc".
+    if (ext in DOC_EXT or (ext == "" and base.upper().startswith(("README", "CHANGELOG")))) and not is_test:
         kinds.add("doc")
     if ext in ASSET_EXT:
         kinds.add("asset")
@@ -123,6 +127,8 @@ def file_kinds(path: str, config: SentinelConfig) -> set[str]:
         kinds.add("config")
     if any(w in seg for seg in lower.split("/") for w in SECURITY_WORDS) or base.startswith(".env"):
         kinds.add("security")
+    if not kinds - {"security"}:
+        kinds.add("unrecognized")  # Makefile, .html, extensionless scripts…: no detector can vouch for these
     return kinds
 
 
@@ -302,6 +308,10 @@ def deterministic_triage(
             t.signal("security_identifier", f.path, "security-related function or class added")
     if t.protected:
         t.signal("protected_paths", sorted(t.protected), floor="T3")
+    unrecognized = sorted(f.path for f in files if "unrecognized" in kinds[f.path])
+    if unrecognized:
+        t.add("unknown")
+        t.signal("unrecognized_file_type", unrecognized, "no detector covers this file type", floor="T2")
 
     # Unreviewed files can never be auto-merged.
     if unreviewed:
@@ -319,6 +329,9 @@ def deterministic_triage(
             eq = "identical" if whitespace_only(f.patch) else "different"
         else:
             eq = "different"  # added/removed code is always a change
+        if eq in ("identical", "docstrings_only") and any(
+                INTERPRETER_LINE.match(text) for text in removed_lines(f.patch) + [x for _, x in added_lines(f.patch)]):
+            eq = "different"  # a shebang or coding line changes how the file runs, even with an identical AST
         if eq not in ("identical", "docstrings_only"):
             if "test" not in k:
                 t.code_files.append(f.path)
@@ -450,14 +463,22 @@ def combine(det: DeterministicTriage, model: ModelTriage | None, config: Sentine
         primary_hint = _normalize(model.category, det)
         for c in [model.category, *model.secondary_categories]:
             c = _normalize(c, det)
+            if c in DETECTED_ONLY and c not in det.categories:
+                signals.append(Signal(name="unsupported_claude_category", value=c, source="claude",
+                                      detail="the diff doesn't show this, so it's ignored"))
+                continue
             categories[c] = tier_max(categories.get(c), CATEGORY_TIER[c])
         signals.append(Signal(name="claude_triage", value=f"{model.category}/{model.tier}/{model.confidence}",
                               source="claude", detail=model.rationale))
         if not model.intent_matches_diff:
             floor = tier_max(floor, "T2")
             signals.append(Signal(name="intent_mismatch", source="claude", detail="Claude: PR text doesn't match diff"))
-    elif det.code_change:
-        categories["unknown"] = tier_max(categories.get("unknown"), "T2")  # code with no Claude classification
+    if det.code_change and (model is None or all(c in CONTENT_ONLY for c in categories)):
+        # Real code changed (no AST match), but nothing explains it as code: never a T0/T1 auto-merge on that basis.
+        categories["unknown"] = tier_max(categories.get("unknown"), "T2")
+        if model is not None:
+            signals.append(Signal(name="unexplained_code_change", value=det.code_files[:5] or True,
+                                  detail="code changed but no code category applies"))
 
     claude_effective = claude_tier
     if model is not None and model.confidence == "low":

@@ -297,6 +297,9 @@ def run_maintainer(
             tracer.log("merge_result", status=status, detail=detail)
             if status == "merged":
                 executor.add_labels(["sentinel:auto-merged"], facts.labels)
+                # A merge made with GITHUB_TOKEN doesn't start push workflows, so CI on the default branch (and the
+                # post-merge guard that listens for it) would never run. Start it explicitly.
+                executor.dispatch_ci(config.ci_workflow, facts.default_branch)
             elif status == "not_mergeable":
                 decision, tri.waiting_for = "waiting", ["GitHub to report the PR as mergeable"]
             elif status in ("stale", "error"):
