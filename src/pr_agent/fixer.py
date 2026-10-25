@@ -66,12 +66,14 @@ class FixOutcome:
     events: list[dict] = field(default_factory=list)
 
 
-def _fix_message(pr: PullRequestInfo, findings: list[Finding], texts: dict[str, str], ci: CIReport | None) -> str:
+def _fix_message(pr: PullRequestInfo, findings: list[Finding], texts: dict[str, str], ci: CIReport | None,
+                 context: dict[str, str] | None = None) -> str:
     data = {
         "repo": pr.repo, "head_sha": pr.head_sha,
         "findings": [{"id": f.id, "path": f.path, "line": f.line, "title": f.title, "explanation": f.explanation,
                       "suggestion": f.suggestion} for f in findings],
         "files": texts,
+        "context_files": context or {},  # read-only reference (e.g. the function a test exercises); don't edit
         "ci": ci_overview(ci),
     }
     payload = json.dumps(data).replace("<", "\\u003c").replace(">", "\\u003e")
@@ -79,9 +81,14 @@ def _fix_message(pr: PullRequestInfo, findings: list[Finding], texts: dict[str, 
            f"{FIX_DATA_OPEN}{payload}{FIX_DATA_CLOSE}"
 
 
+LAST_STEP = ("That was your last tool call: reply now with only the JSON proposal (can_fix=false if you're not "
+             "sure the fix is right).")
+MAX_CONTEXT_FILES = 4
+
+
 def run_fixer(*, pr: PullRequestInfo, files: list[ChangedFile], findings: list[Finding], ci: CIReport | None,
               model, read_source: Callable[[str], str], list_repo_files, limits: Limits,
-              config: SentinelConfig) -> FixOutcome:
+              config: SentinelConfig, context_paths: list[str] | tuple = ()) -> FixOutcome:
     out = FixOutcome()
     texts = {}
     for path in sorted({f.path for f in findings}):
@@ -90,11 +97,22 @@ def run_fixer(*, pr: PullRequestInfo, files: list[ChangedFile], findings: list[F
         except Exception as exc:
             out.rejected_reason = f"could not read {path}: {type(exc).__name__}"
             return out
+    # Files the review already read for context (live on PR #28, the fixer spent all its steps fetching the function
+    # under test again and never answered). Give them up front; anything unreadable is just left out.
+    context: dict[str, str] = {}
+    for path in [p for p in context_paths if p not in texts][:MAX_CONTEXT_FILES]:
+        try:
+            context[path] = read_source(path)[: limits.max_file_chars]
+        except Exception:
+            continue
     ctx = ReviewContext(pr=pr, files=[f for f in files if f.patch], unreviewed=[], read_source=read_source,
                         limits=limits, ci=ci, list_repo_files=list_repo_files)
-    messages: list[dict] = [{"role": "user", "content": _fix_message(pr, findings, texts, ci)}]
+    ctx.related_allowed.update(context)  # so read_file on them works without list_related_files first
+    messages: list[dict] = [{"role": "user", "content": _fix_message(pr, findings, texts, ci, context)}]
     started = time.monotonic()
-    for _ in range(limits.max_fix_steps):
+    for step in range(limits.max_fix_steps):
+        if step == limits.max_fix_steps - 1 and isinstance(messages[-1]["content"], list):
+            messages[-1]["content"].append({"type": "text", "text": LAST_STEP})  # not sent yet: still append-only
         if out.input_tokens + out.output_tokens >= limits.max_fix_tokens:
             out.rejected_reason = "fixer token budget used up"
             return out

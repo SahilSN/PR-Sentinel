@@ -820,3 +820,55 @@ def test_job_timeouts_cover_follow_ci():
     worst = 2 * Limits().max_runtime_seconds + 2 * CI_WAIT_SECONDS + 180  # 3 min for checkout + pip install
     for name in ("review", "merge-gate", "chatops"):
         assert jobs[name]["timeout-minutes"] * 60 >= worst, name
+
+
+# ---------------- fixer step budget (live on PR #28: "fixer step budget used up", no patch) ----------------
+
+
+def _fixer_args():
+    from pr_agent.config import Limits
+    from pr_agent.schemas import PullRequestInfo
+
+    pr = PullRequestInfo(repo="SahilSN/ern", pr_number=28, title="Add tests", base_sha="b" * 40, head_sha="c" * 40)
+    test = ChangedFile(path="tests/test_sizes.py", status="added", patch="@@ -0,0 +1,2 @@\n+x\n+y", additions=2)
+    finding = Finding(id="tests/test_sizes.py:wrong-assertion", path="tests/test_sizes.py", line=2, severity="medium",
+                      title="t", explanation="e", suggestion="s", confidence="high")
+    sources = {"tests/test_sizes.py": "def test():\n    assert size(250) == 'M'\n",
+               "src/sizes.py": "def size(n):\n    return 'L' if n > 200 else 'M'\n"}
+    return dict(pr=pr, files=[test], findings=[finding], ci=None, read_source=sources.__getitem__,
+                list_repo_files=None, limits=Limits(), config=SentinelConfig())
+
+
+def _proposal():
+    from pr_agent.claude_client import text_response
+
+    return text_response(json.dumps({
+        "can_fix": True, "reason": "expected value", "finding_ids": ["tests/test_sizes.py:wrong-assertion"],
+        "edits": [{"path": "tests/test_sizes.py", "old_text": "== 'M'", "new_text": "== 'L'"}], "new_files": [],
+        "commit_message": "Fix expected size bucket", "risk_notes": ""}))
+
+
+def test_fixer_gets_the_files_the_review_read_and_can_open_them_directly():
+    from pr_agent.claude_client import ScriptedModel, tool_response
+    from pr_agent.fixer import run_fixer
+
+    model = ScriptedModel([tool_response(("read_file", {"path": "src/sizes.py"})), _proposal()])
+    out = run_fixer(model=model, context_paths=["src/sizes.py"], **_fixer_args())
+    first = model.requests[0][0]["content"]
+    assert "context_files" in first and "return 'L' if n > 200" in first.encode().decode("unicode_escape")
+    tool_result = model.requests[1][-1]["content"][0]
+    assert not tool_result.get("is_error") and "return 'L'" in tool_result["content"]  # no list_related_files needed
+    assert out.proposal is not None and out.proposal.can_fix
+
+
+def test_fixer_has_room_for_several_lookups_and_is_told_when_to_answer():
+    from pr_agent.claude_client import ScriptedModel, tool_response
+    from pr_agent.fixer import LAST_STEP, run_fixer
+
+    lookups = [tool_response(("read_file", {"path": "tests/test_sizes.py"}))] + [
+        tool_response(("get_ci_status", {})) for _ in range(4)]
+    model = ScriptedModel(lookups + [_proposal()])  # 5 tool calls, then the answer: needed 6 steps (limit was 4)
+    out = run_fixer(model=model, **_fixer_args())
+    assert out.rejected_reason is None and out.proposal.can_fix
+    last_user = model.requests[-1][-1]["content"]
+    assert last_user[-1] == {"type": "text", "text": LAST_STEP}  # nudged on its final step, after the tool results
