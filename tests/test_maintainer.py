@@ -266,6 +266,36 @@ def test_secret_blocks_and_is_never_echoed(env, tmp_path):
     assert "DEMOKEY" not in everything and "demo/client.py:1" in fake.comments[0]["body"]
 
 
+class EchoingModel(FakeModel):
+    """Like the live run on PR #18: Claude quotes the committed secret back in its own review text."""
+
+    SECRET = "sk-ant-api03-DEMOKEYDEMOKEYDEMOKEY12345"
+
+    def create(self, system, messages, tools, schema=None):
+        response = super().create(system, messages, tools, schema=schema)
+        block = response.content[0] if response.content else None
+        if response.stop_reason == "end_turn" and block is not None and block.type == "text":
+            data = json.loads(block.text)
+            if "summary" in data and "open_findings" in data:
+                data["summary"] += f' The key "{self.SECRET}" is committed.'
+                for finding in data["open_findings"]:
+                    finding["explanation"] += f" The literal is {self.SECRET}."
+                block.text = json.dumps(data)
+        return response
+
+
+def test_secret_quoted_by_claude_is_redacted_everywhere(env, tmp_path):
+    fake = FakeGitHub(load_fixture("m3_secret_pr.json"))
+    args = ["--repo", fake.fixture["repo"], "--pr", str(fake.fixture["pr_number"]), "--fake-model",
+            "--output-dir", str(tmp_path), "--publish"]
+    assert main(args, gh=fake.client(), model=EchoingModel()) == EXIT_OK
+    body = fake.comments[0]["body"]
+    state = base64.b64decode(body.rsplit("pr-sentinel-state:v1 ", 1)[1].split(" ")[0]).decode()
+    everything = body + state + (tmp_path / "run_result.json").read_text() + (tmp_path / "actions.jsonl").read_text()
+    assert "DEMOKEY" not in everything
+    assert "[redacted]" in body and "demo/client.py:1" in body  # the echo was there, and was scrubbed
+
+
 def test_policy_file_in_the_pr_is_ignored(env, tmp_path):
     data = load_fixture("m3_docs_typo_pr.json")
     data["sentinel_config"] = SHADOW  # what the default branch says

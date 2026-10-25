@@ -61,6 +61,13 @@ def test_deterministic_categories(files, kw, category, floor):
     assert t.floor == floor
 
 
+def test_secret_values_are_captured_for_redaction_only():
+    t = det([cf("demo/db.py", 'conn = connect(password="correct-horse-battery-staple")',
+                'KEY = "sk-ant-api03-ABCDEFGHIJKLMNOP"', status="added")])
+    assert set(t.secret_values) == {"correct-horse-battery-staple", "sk-ant-api03-ABCDEFGHIJKLMNOP"}
+    assert not any(v in str(s.value) + s.detail for s in t.signals for v in t.secret_values)
+
+
 def test_dependencies_by_semver():
     base = "httpx>=0.27\npydantic==2.7\nrich==13.0\n"
     for head, expected in [("httpx>=0.28\npydantic==2.7\nrich==13.0\n", "dependency_patch"),

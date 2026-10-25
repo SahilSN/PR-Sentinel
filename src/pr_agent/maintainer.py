@@ -5,6 +5,7 @@ Claude only classifies and proposes. Every write decision is made here and in po
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -338,7 +339,18 @@ def run_maintainer(
     result.triage = tri
     result.autofix = record
     result.actions = executor.actions
+    if det.secret_values:
+        result = redact_secrets(result, det.secret_values)
     return result, extras
+
+
+def redact_secrets(result: ReviewResult, values: list[str]) -> ReviewResult:
+    """Claude reads the diff, so it can quote a committed secret in its summary, findings or review guide.
+    Strip every detected value before anything is rendered, stored in the state block, or written to run_result."""
+    data = result.model_dump_json()
+    for value in sorted(set(values), key=len, reverse=True):
+        data = data.replace(json.dumps(value)[1:-1], "[redacted]")
+    return ReviewResult.model_validate_json(data)
 
 
 def count_recent_auto_merges(pulls: list[dict], now: datetime | None = None) -> int:
