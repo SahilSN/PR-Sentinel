@@ -579,3 +579,76 @@ def test_merge_gate_recheck_keeps_the_proposed_autofix(env, tmp_path):
     assert any("autofix" in w for w in second["triage"]["would_have"])
     assert second["autofix"]["patch_preview"] and "### Suggested fix" in fake.comments[0]["body"]
     assert non_comment_writes(fake) == []
+
+
+# ---------------- repository-wide merge lock (QA follow-up, docs/qa/2026-10-24-milestone-3-followup.md) ----------------
+
+
+def _now_iso(offset_seconds=0):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@pytest.fixture
+def no_lock_wait(monkeypatch):
+    import pr_agent.executor as executor_module
+    monkeypatch.setattr(executor_module, "LOCK_WAIT_SECONDS", 0)
+
+
+def test_merge_happens_only_while_holding_the_lock(env, tmp_path):
+    fake = FakeGitHub(load_fixture("m3_docs_typo_pr.json"))
+    run(fake, tmp_path)
+    assert fake.merged and fake.lock_events == ["acquire", "merge", "release"]
+    assert "refs/sentinel/merge-lock" not in fake.refs
+    lock_commit = fake.commit_objs["c" * 40]  # the first commit created is the lock commit
+    assert lock_commit["parents"] == [] and "PR Sentinel merge lock" in lock_commit["message"]
+    assert "sentinel:auto-merged" in fake.labels and fake.dispatches == [{"workflow": "ci.yml", "ref": "main"}]
+
+
+def test_a_held_lock_makes_the_pr_wait(env, tmp_path, no_lock_wait):
+    fake = FakeGitHub(load_fixture("m3_docs_typo_pr.json"))
+    fake.refs["refs/sentinel/merge-lock"] = "a" * 40
+    fake.commit_objs["a" * 40] = {"message": "PR Sentinel merge lock", "parents": [], "date": _now_iso(-30)}
+    result = run(fake, tmp_path)
+    assert not fake.merged and result["triage"]["decision"] == "waiting"
+    assert "merge lock" in result["triage"]["waiting_for"][0]
+    assert fake.refs["refs/sentinel/merge-lock"] == "a" * 40  # someone else's lock is left alone
+
+
+def test_a_stale_lock_is_taken_over_by_fast_forward(env, tmp_path, no_lock_wait):
+    fake = FakeGitHub(load_fixture("m3_docs_typo_pr.json"))
+    fake.refs["refs/sentinel/merge-lock"] = "a" * 40
+    fake.commit_objs["a" * 40] = {"message": "PR Sentinel merge lock", "parents": [], "date": "2026-01-01T00:00:00Z"}
+    run(fake, tmp_path)
+    assert fake.merged and fake.lock_events == ["takeover", "merge", "release"]
+    assert "refs/sentinel/merge-lock" not in fake.refs
+
+
+def test_daily_cap_is_recounted_under_the_lock(env, tmp_path):
+    """Two PRs could both read merges_today=9 before either merged; under the lock, the fresh count wins."""
+    data = load_fixture("m3_docs_typo_pr.json")
+    data["closed_pulls"] = [{"merged_at": _now_iso(-60 * i), "labels": [{"name": "sentinel:auto-merged"}]}
+                            for i in range(1, 11)]
+    fake = FakeGitHub(data)  # pr_state.merges_today is 0: the stale pre-lock count says "fine"
+    result = run(fake, tmp_path)
+    assert not fake.merged and "daily_merge_cap" in result["triage"]["blocked_by"]
+    assert fake.lock_events == ["acquire", "release"]
+
+
+def test_lock_is_released_when_the_merge_fails(env, tmp_path):
+    fake = FakeGitHub(load_fixture("m3_docs_typo_pr.json"))
+    fake.merge_status = 405
+    run(fake, tmp_path)
+    assert not fake.merged and fake.lock_events == ["acquire", "release"]
+
+
+def test_recent_auto_merge_count():
+    from datetime import datetime, timezone
+    from pr_agent.maintainer import count_recent_auto_merges
+    now = datetime(2026, 10, 24, 12, tzinfo=timezone.utc)
+    label = [{"name": "sentinel:auto-merged"}]
+    pulls = [{"merged_at": "2026-10-24T11:00:00Z", "labels": label},
+             {"merged_at": "2026-10-23T11:00:00Z", "labels": label},  # older than 24h
+             {"merged_at": "2026-10-24T11:30:00Z", "labels": []},      # merged by a person
+             {"merged_at": None, "labels": label}]                     # closed, not merged
+    assert count_recent_auto_merges(pulls, now) == 1

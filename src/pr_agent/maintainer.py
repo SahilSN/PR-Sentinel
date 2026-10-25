@@ -295,15 +295,24 @@ def run_maintainer(
         real = [b for b in blockers if not b.startswith("autonomy_")]
         tracer.log("merge_gate", blockers=real)
         if not real:
-            status, detail = executor.merge(head_sha=facts.head_sha, title=facts.title or pr.title,
-                                            method=config.merge.method, category=tri.category, tier=tri.tier,
-                                            checks=config.merge.required_checks, run_url=run_url)
-            tracer.log("merge_result", status=status, detail=detail)
-            if status == "merged":
+            def after_merge():
                 executor.add_labels(["sentinel:auto-merged"], facts.labels)
                 # A merge made with GITHUB_TOKEN doesn't start push workflows, so CI on the default branch (and the
                 # post-merge guard that listens for it) would never run. Start it explicitly.
                 executor.dispatch_ci(config.ci_workflow, facts.default_branch)
+
+            status, detail, fresh = executor.locked_merge(
+                tree_sha=_tree_of(executor, facts.head_sha), recheck=lambda: fresh_merge_blockers(executor, config),
+                after_merge=after_merge, head_sha=facts.head_sha, title=facts.title or pr.title,
+                method=config.merge.method, category=tri.category, tier=tri.tier,
+                checks=config.merge.required_checks, run_url=run_url)
+            tracer.log("merge_result", status=status, detail=detail)
+            if status == "locked":
+                decision, tri.waiting_for = "waiting", ["another PR Sentinel merge to finish (repository-wide merge lock)"]
+                notes.append("Another merge held the lock; this PR is re-checked on its next event (CI, push or label).")
+            elif status == "blocked":
+                decision = "review_only"
+                real = real + fresh
             elif status == "not_mergeable":
                 decision, tri.waiting_for = "waiting", ["GitHub to report the PR as mergeable"]
             elif status in ("stale", "error"):
@@ -342,6 +351,36 @@ def redact_secrets(result: ReviewResult, values: list[str]) -> ReviewResult:
     for value in sorted(set(values), key=len, reverse=True):
         data = data.replace(json.dumps(value)[1:-1], "[redacted]")
     return ReviewResult.model_validate_json(data)
+
+
+def count_recent_auto_merges(pulls: list[dict], now: datetime | None = None) -> int:
+    """Autonomous merges in the last 24 hours, from the pulls list (consistent; search can lag behind)."""
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=1)
+    count = 0
+    for p in pulls:
+        merged = p.get("merged_at")
+        if merged and "sentinel:auto-merged" in [l.get("name") for l in p.get("labels", [])]:
+            if datetime.fromisoformat(merged.replace("Z", "+00:00")) >= since:
+                count += 1
+    return count
+
+
+def fresh_merge_blockers(executor: Executor, config: SentinelConfig) -> list[str]:
+    """Re-checked while holding the merge lock, so two PRs can't both pass the daily cap or ignore a new pause."""
+    gh, repo = executor.gh, executor.repo
+    blockers = []
+    if count_recent_auto_merges(gh.recent_closed_pulls(repo)) >= config.merge.max_auto_merges_per_day:
+        blockers.append("daily_merge_cap")
+    if gh.list_issues(repo, "sentinel:paused"):
+        blockers.append("sentinel_paused")
+    return blockers
+
+
+def _tree_of(executor: Executor, sha: str) -> str:
+    """Any existing tree works for the (empty-change) lock commit; use the PR head's."""
+    if executor.gh is None or not executor.allowed("merge"):
+        return ""
+    return executor.gh.get_git_commit(executor.repo, sha)["tree"]["sha"]
 
 
 def trusted(facts: PRFacts, config: SentinelConfig) -> bool:
