@@ -28,7 +28,8 @@ class GitHubError(Exception):
 
 
 class GitHubClient:
-    def __init__(self, token: str, http: httpx.Client | None = None, max_retries: int = 3, sleep=time.sleep):
+    def __init__(self, token: str, http: httpx.Client | None = None, max_retries: int = 3, sleep=time.sleep,
+                 read_only: bool = False):
         self._http = http or httpx.Client(base_url=API, timeout=20.0)
         self._headers = {
             "Authorization": f"Bearer {token}",
@@ -39,6 +40,7 @@ class GitHubClient:
         self._max_retries = max_retries
         self._sleep = sleep
         self.write_requests = 0  # counted so tests can prove dry-run never writes
+        self.read_only = read_only  # --dry-run: every write is refused before any request is sent
 
     # ---------- HTTP plumbing ----------
 
@@ -47,6 +49,8 @@ class GitHubClient:
         if accept:
             headers["Accept"] = accept
         if method != "GET":
+            if self.read_only:
+                raise GitHubError(None, f"dry run: refused {method} {url}")
             self.write_requests += 1
         for attempt in range(self._max_retries + 1):
             try:
@@ -163,3 +167,116 @@ class GitHubClient:
     def update_comment(self, repo: str, comment_id: int, body: str) -> int:
         resp = self._request("PATCH", f"/repos/{repo}/issues/comments/{int(comment_id)}", json={"body": body})
         return resp.json()["id"]
+
+    # ---------- Milestone 3: reads ----------
+
+    def get_repo(self, repo: str) -> dict:
+        return self._request("GET", f"/repos/{repo}").json()
+
+    def get_pull(self, repo: str, pr_number: int) -> dict:
+        return self._request("GET", f"/repos/{repo}/pulls/{int(pr_number)}").json()
+
+    def get_permission(self, repo: str, user: str) -> str | None:
+        """admin | maintain | write | triage | read | none. None if it can't be determined."""
+        try:
+            data = self._request("GET", f"/repos/{repo}/collaborators/{quote(user, safe='')}/permission").json()
+        except GitHubError:
+            return None
+        return data.get("role_name") or data.get("permission")
+
+    def list_reviews(self, repo: str, pr_number: int) -> list[dict]:
+        return self._paginate(f"/repos/{repo}/pulls/{int(pr_number)}/reviews", max_pages=5)
+
+    def list_pr_commits(self, repo: str, pr_number: int) -> list[dict]:
+        return self._paginate(f"/repos/{repo}/pulls/{int(pr_number)}/commits", max_pages=3)
+
+    def get_ref_sha(self, repo: str, branch: str) -> str:
+        return self._request("GET", f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}").json()["object"]["sha"]
+
+    def get_git_commit(self, repo: str, sha: str) -> dict:
+        _require_sha(sha)
+        return self._request("GET", f"/repos/{repo}/git/commits/{sha}").json()
+
+    def get_commit(self, repo: str, sha: str) -> dict:
+        """REST commit with its changed `files` (used by the post-merge guard)."""
+        _require_sha(sha)
+        return self._request("GET", f"/repos/{repo}/commits/{sha}").json()
+
+    def pulls_for_commit(self, repo: str, sha: str) -> list[dict]:
+        _require_sha(sha)
+        return self._request("GET", f"/repos/{repo}/commits/{sha}/pulls").json()
+
+    def search_issue_count(self, query: str) -> int:
+        return int(self._request("GET", "/search/issues", params={"q": query, "per_page": 1}).json()
+                   .get("total_count", 0))
+
+    def list_issues(self, repo: str, labels: str, state: str = "open") -> list[dict]:
+        return self._request("GET", f"/repos/{repo}/issues",
+                             params={"labels": labels, "state": state, "per_page": 30}).json()
+
+    def get_issue_comment(self, repo: str, comment_id: int) -> dict:
+        return self._request("GET", f"/repos/{repo}/issues/comments/{int(comment_id)}").json()
+
+    # ---------- Milestone 3: writes (all refused in read-only mode) ----------
+
+    def create_tree(self, repo: str, base_tree: str, entries: list[dict]) -> str:
+        return self._request("POST", f"/repos/{repo}/git/trees",
+                             json={"base_tree": base_tree, "tree": entries}).json()["sha"]
+
+    def create_commit(self, repo: str, message: str, tree: str, parents: list[str]) -> str:
+        return self._request("POST", f"/repos/{repo}/git/commits",
+                             json={"message": message, "tree": tree, "parents": parents}).json()["sha"]
+
+    def update_ref(self, repo: str, branch: str, sha: str) -> None:
+        """Fast-forward only. A 422 means the branch moved: callers abort, never retry with force."""
+        self._request("PATCH", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}",
+                      json={"sha": sha, "force": False})
+
+    def create_ref(self, repo: str, branch: str, sha: str) -> None:
+        self._request("POST", f"/repos/{repo}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
+
+    def dispatch_workflow(self, repo: str, workflow: str, ref: str) -> None:
+        self._request("POST", f"/repos/{repo}/actions/workflows/{quote(workflow, safe='')}/dispatches",
+                      json={"ref": ref})
+
+    def merge_pull(self, repo: str, pr_number: int, sha: str, method: str, title: str, message: str) -> dict:
+        _require_sha(sha)
+        return self._request("PUT", f"/repos/{repo}/pulls/{int(pr_number)}/merge", json={
+            "sha": sha, "merge_method": method, "commit_title": title, "commit_message": message}).json()
+
+    def update_branch(self, repo: str, pr_number: int, expected_head_sha: str) -> None:
+        self._request("PUT", f"/repos/{repo}/pulls/{int(pr_number)}/update-branch",
+                      json={"expected_head_sha": expected_head_sha})
+
+    def ensure_label(self, repo: str, name: str, color: str = "6f42c1", description: str = "") -> None:
+        try:
+            self._request("POST", f"/repos/{repo}/labels", json={"name": name, "color": color,
+                                                                  "description": description[:100]})
+        except GitHubError as exc:
+            if exc.status != 422:  # 422 = already exists
+                raise
+
+    def add_labels(self, repo: str, issue_number: int, labels: list[str]) -> None:
+        self._request("POST", f"/repos/{repo}/issues/{int(issue_number)}/labels", json={"labels": labels})
+
+    def remove_label(self, repo: str, issue_number: int, label: str) -> None:
+        try:
+            self._request("DELETE", f"/repos/{repo}/issues/{int(issue_number)}/labels/{quote(label, safe='')}")
+        except GitHubError as exc:
+            if exc.status != 404:
+                raise
+
+    def request_reviewers(self, repo: str, pr_number: int, reviewers: list[str]) -> None:
+        self._request("POST", f"/repos/{repo}/pulls/{int(pr_number)}/requested_reviewers",
+                      json={"reviewers": reviewers})
+
+    def create_pull(self, repo: str, head: str, base: str, title: str, body: str) -> dict:
+        return self._request("POST", f"/repos/{repo}/pulls",
+                             json={"head": head, "base": base, "title": title, "body": body}).json()
+
+    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> dict:
+        return self._request("POST", f"/repos/{repo}/issues",
+                             json={"title": title, "body": body, "labels": labels}).json()
+
+    def add_reaction(self, repo: str, comment_id: int, content: str = "eyes") -> None:
+        self._request("POST", f"/repos/{repo}/issues/comments/{int(comment_id)}/reactions", json={"content": content})

@@ -1,0 +1,26 @@
+{
+  "repo": "SahilSN/ern",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_review": null,
+  "sentinel_config": {
+    "autonomy": "merge",
+    "owners": [
+      "SahilSN"
+    ]
+  },
+  "pr_number": 36,
+  "title": "Small access check cleanup",
+  "head_sha": "6666666666666666666666666666666666666666",
+  "changed_files": [
+    {
+      "path": "demo/access.py",
+      "status": "added",
+      "additions": 3,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,3 @@\n+def is_admin(user):\n+    access_level = \"user\u202e \u2066# admin\u2069 \u2066\"\n+    return access_level == \"admin\""
+    }
+  ],
+  "pr_state": {
+    "head_ref": "access"
+  }
+}

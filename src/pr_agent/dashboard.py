@@ -140,6 +140,8 @@ def render_dashboard(result: ReviewResult, trace: list[dict], demo: bool = False
                    + "</ul>")
     out.append("</section>")
 
+    out += _triage_panel(result)
+
     out.append('<section class="panel"><h2>Findings</h2><div class="grid">'
                f'<div class="stat"><b>{len(result.open_findings)}</b><span>open</span></div>'
                f'<div class="stat"><b>{len(result.resolved_findings)}</b><span>resolved</span></div>'
@@ -207,6 +209,54 @@ def render_dashboard(result: ReviewResult, trace: list[dict], demo: bool = False
     out.append('<p class="note">Snapshot of one run from its artifacts; not a run history. '
                "Automated review, not a security guarantee.</p></main></body></html>")
     return "\n".join(out)
+
+
+TIER_TONE = {"T0": "ok", "T1": "ok", "T2": "warn", "T3": "bad", "BLOCK": "bad"}
+
+
+def _triage_panel(result: ReviewResult) -> list[str]:
+    """Milestone 3: tier, category, signals, decision, actions taken or that would have been taken, owner guide."""
+    t = result.triage
+    if t is None:
+        return []
+    out = []
+    if t.would_have and t.autonomy == "shadow":
+        out.append('<div class="demo">Shadow mode: PR Sentinel only reports what it would have done.</div>')
+    out.append('<section class="panel"><h2>Triage</h2>')
+    out.append(f'<p><span class="badge big {TIER_TONE[t.tier]}">{_e(t.tier)}</span> <b>{_e(t.category)}</b> · size '
+               f"{_e(t.size)} · floor {_e(t.deterministic_floor)} · Claude {_e(t.claude_tier or '-')} · "
+               f"confidence {_e(t.confidence)}</p>")
+    out.append(f"<p><b>Decision:</b> {_e(t.decision)} (autonomy <code>{_e(t.autonomy)}</code>)</p>")
+    if t.blocked_by:
+        out.append(f"<p><b>Not merging because:</b> {_e(', '.join(t.blocked_by))}</p>")
+    if t.waiting_for:
+        out.append("<p><b>Waiting for:</b></p><ul>" + "".join(f"<li>{_e(w)}</li>" for w in t.waiting_for) + "</ul>")
+    if t.notes:
+        out.append("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in t.notes) + "</ul>")
+    rows = "".join(
+        f"<tr><td><code>{_e(s.name)}</code></td><td>{_e(', '.join(map(str, s.value)) if isinstance(s.value, list) else s.value)}"
+        f"</td><td>{_e(s.source)}</td></tr>" for s in t.signals)
+    out.append(f'<details><summary>Signals ({len(t.signals)})</summary><div class="table"><table>'
+               f"<tr><th>Signal</th><th>Value</th><th>Source</th></tr>{rows}</table></div></details>")
+    if result.actions or t.would_have:
+        out.append("<p><b>Actions taken:</b></p><ul>" + "".join(
+            f"<li><code>{_e(a.type)}</code> {_e(json.dumps(a.model_extra or {})[:200])}</li>" for a in result.actions)
+                   + "".join(f'<li><span class="badge muted">would have</span> {_e(w)}</li>'
+                             for w in (t.would_have or [])) + "</ul>")
+    if result.autofix is not None:
+        a = result.autofix
+        status = "applied" if a.applied else ("rejected: " + (a.rejected_reason or "") if a.rejected_reason else "proposed")
+        out.append(f"<p><b>Autofix attempt {a.attempt}:</b> {_e(status)}"
+                   + (f" · commit <code>{_e(a.commit_sha[:12])}</code>" if a.commit_sha else "") + "</p>")
+    g = t.owner_review_guide
+    if g is not None and t.tier in ("T3", "BLOCK"):
+        out.append(f"<p><b>Owner review guide:</b> {_e(g.change_summary)}</p><ul>"
+                   + "".join(f"<li><b>{label}:</b> {_e('; '.join(items))}</li>" for label, items in
+                             (("Key risks", g.key_risks), ("Review first", g.review_first),
+                              ("Questions", g.questions_for_author), ("Suggested tests", g.suggested_tests)) if items)
+                   + "</ul>")
+    out.append("</section>")
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

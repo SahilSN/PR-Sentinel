@@ -1,0 +1,33 @@
+{
+  "repo": "SahilSN/ern",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_review": null,
+  "sentinel_config": {
+    "autonomy": "merge",
+    "owners": [
+      "SahilSN"
+    ]
+  },
+  "pr_number": 34,
+  "title": "Store review state in a JSON file instead of the PR comment",
+  "head_sha": "4444444444444444444444444444444444444444",
+  "changed_files": [
+    {
+      "path": "src/pr_agent/state.py",
+      "status": "modified",
+      "additions": 30,
+      "deletions": 25,
+      "patch": "@@ -1,3 +1,4 @@\n-import base64\n+import json\n+from pathlib import Path\n STATE_FILE = 'state.json'"
+    },
+    {
+      "path": "src/pr_agent/schemas.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 0,
+      "patch": "@@ -1,2 +1,6 @@\n class PreviousReview(BaseModel):\n+    stored_at: str = ''"
+    }
+  ],
+  "pr_state": {
+    "head_ref": "json-state"
+  }
+}

@@ -14,6 +14,8 @@ from .config import Settings
 from .schemas import model_review_json_schema
 
 PR_DATA_OPEN, PR_DATA_CLOSE = "<pr_data>", "</pr_data>"
+FIX_DATA_OPEN, FIX_DATA_CLOSE = "<fix_data>", "</fix_data>"
+FIXER_MARKER = "[PR Sentinel fixer]"
 
 
 MAX_ATTEMPTS = 3  # one try plus two retries, like the SDK default
@@ -29,7 +31,7 @@ class ClaudeModel:
         self.client = anthropic.Anthropic(timeout=90.0, max_retries=0)
         self._deadline: float | None = None  # set on the first request
 
-    def create(self, system: str, messages: list, tools: list):
+    def create(self, system: str, messages: list, tools: list, schema: dict | None = None):
         # Every attempt gets at most what's left of MAX_RUNTIME_SECONDS, so a slow or failing API can't run past the
         # agent's wall-clock limit (and the Actions job timeout) before the controller gets to stop the run.
         if self._deadline is None:
@@ -42,7 +44,7 @@ class ClaudeModel:
             tools=tools,
             output_config={
                 "effort": self.settings.effort,
-                "format": {"type": "json_schema", "schema": model_review_json_schema()},
+                "format": {"type": "json_schema", "schema": schema or model_review_json_schema()},
             },
         )
         for attempt in range(MAX_ATTEMPTS):
@@ -120,7 +122,7 @@ class ScriptedModel:
         self.responses = list(responses)
         self.requests: list[list] = []
 
-    def create(self, system: str, messages: list, tools: list):
+    def create(self, system: str, messages: list, tools: list, schema: dict | None = None):
         self.requests.append([dict(m) for m in messages])
         if not self.responses:
             raise AssertionError("ScriptedModel ran out of responses")
@@ -142,7 +144,9 @@ class FakeModel:
     5. return the ModelReview JSON from a few regex rules (plus None-returning helpers found in step 4)
     """
 
-    def create(self, system: str, messages: list, tools: list):
+    def create(self, system: str, messages: list, tools: list, schema: dict | None = None):
+        if system.startswith(FIXER_MARKER):
+            return _fake_fix(messages)
         data = _extract_pr_data(messages)
         calls, results = _tool_history(messages)
         first = data["files"][0]["path"] if data["files"] else None
@@ -280,9 +284,85 @@ def _heuristic_review(data: dict, helper_texts: dict[str, str] | None = None, ci
             next_step = "Fix the finding above, then push; the check should pass."
         else:
             next_step = f"Open the log of the failing check '{failed[0]['name']}': the cause isn't clear from the evidence."
+    triage, assessment, guide = _fake_triage(data, findings, helper_texts or {})
     return {"summary": summary, "open_findings": findings, "resolved_finding_ids": resolved,
             "needs_human": False, "needs_human_reason": None, "ci_likely_cause": likely_cause,
-            "ci_next_step": next_step}
+            "ci_next_step": next_step, "triage": triage, "bugfix_assessment": assessment,
+            "owner_review_guide": guide}
+
+
+def _fake_triage(data: dict, findings: list, helper_texts: dict) -> tuple[dict, dict | None, dict | None]:
+    """Deterministic stand-in for Claude's triage. The controller's deterministic floor still applies on top."""
+    paths = [f["path"] for f in data["files"]]
+    is_test = lambda p: p.startswith("tests/") or "/test_" in p or p.split("/")[-1].startswith("test_")  # noqa: E731
+    is_doc = lambda p: p.endswith((".md", ".rst", ".txt"))  # noqa: E731
+    title = data.get("title", "")
+    assessment = guide = None
+    if paths and all(is_doc(p) for p in paths):
+        category, tier = "docs", "T0"
+    elif paths and all(is_test(p) for p in paths):
+        category, tier = "tests_only", "T1"
+    elif any(p.startswith("src/pr_agent/") for p in paths):
+        category, tier = "agent_self", "T3"
+    elif any(p.startswith(".github/") for p in paths):
+        category, tier = "ci_cd", "T3"
+    elif re.search(r"\b(fix|bug|crash|handle|error)", title, re.I):
+        category, tier = "bugfix_small", "T1"
+    else:
+        category, tier = "feature_small", "T2"
+    if category == "bugfix_small":
+        assessment = {
+            "bug": findings[0]["title"] if findings else f"The bug described by the PR: {title}"[:200],
+            "root_cause": findings[0]["explanation"] if findings else "Addressed in the changed code.",
+            "root_cause_addressed": not findings,
+            "regression_risk": "low",
+            "callers_checked": sorted(helper_texts),
+            "test_coverage": "added" if any(is_test(p) for p in paths) else "none",
+            "confidence": "high" if not findings else "medium",
+        }
+    if tier == "T3":
+        guide = {
+            "change_summary": f"{category.replace('_', ' ')} change: {title}"[:300],
+            "key_risks": ["Changes how the reviewer itself behaves", "May alter the run_result.json contract"],
+            "review_first": paths[:5],
+            "questions_for_author": ["What tests cover this behavior change?"],
+            "suggested_tests": ["Run the full offline suite and one live PR in shadow mode"],
+        }
+    triage = {"category": category, "secondary_categories": [], "tier": tier, "confidence": "high",
+              "rationale": f"Offline heuristic: {category} from file paths and title.", "intent_matches_diff": True}
+    return triage, assessment, guide
+
+
+def _fake_fix(messages: list) -> FakeResponse:
+    """Offline fixer: guards None dereferences right after the assignment that produced the value."""
+    first = messages[0]["content"]
+    text = first if isinstance(first, str) else first[0]["text"]
+    data = json.loads(text[text.index(FIX_DATA_OPEN) + len(FIX_DATA_OPEN): text.index(FIX_DATA_CLOSE)])
+    edits, ids = [], []
+    for f in data["findings"]:
+        m = re.search(r"None dereference of `(\w+)`", f["title"])
+        source = data["files"].get(f["path"])
+        if not m or source is None:
+            continue
+        var = m.group(1)
+        lines = source.splitlines()
+        upto = lines[: (f.get("line") or len(lines))]
+        for line in reversed(upto):
+            a = re.match(rf"^([ \t]*){var}\s*=(?!=)", line)
+            if a:
+                indent = a.group(1)
+                edits.append({"path": f["path"], "old_text": line + "\n",
+                              "new_text": f"{line}\n{indent}if {var} is None:\n{indent}    return None\n"})
+                ids.append(f["id"])
+                break
+    if not edits:
+        body = {"can_fix": False, "reason": "No mechanical fix for these findings.", "finding_ids": [], "edits": [],
+                "new_files": [], "commit_message": "", "risk_notes": ""}
+    else:
+        body = {"can_fix": True, "reason": "Return early when the lookup finds nothing.", "finding_ids": ids,
+                "edits": edits, "new_files": [], "commit_message": "PR Sentinel autofix: guard None lookups",
+                "risk_notes": "Behavior changes only when the lookup returns None."}
+    return text_response(json.dumps(body))
 
 
 def _finding(path, line, kind, severity, title, explanation, suggestion):

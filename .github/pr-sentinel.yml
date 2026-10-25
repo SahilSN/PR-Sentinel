@@ -1,0 +1,55 @@
+# PR Sentinel policy (MILESTONE_3.md §12). Read from the DEFAULT branch only; edits in a PR have no effect
+# until merged, and a PR that edits this file is always escalated to the owner (T3, never auto-merged).
+#
+# Kill switch: the repo variable SENTINEL_AUTONOMY overrides `autonomy` downward. Set it to `review` to stop
+# all writes immediately.
+
+autonomy: shadow                 # off | review | shadow | fix | merge
+owners: [SahilSN]
+trusted_bots: ["dependabot[bot]"]
+require_owner_for_agent_prs: true
+ci_workflow: ci.yml
+
+merge:
+  method: squash
+  allowed_tiers: [T0, T1]
+  required_checks: ["tests"]
+  allow_docs_without_ci: true
+  max_auto_merges_per_day: 10
+  delete_branch: false
+  auto_merge_reverts: false
+  owner_can_merge_protected: false
+
+autofix:
+  allowed_tiers: [T0, T1]
+  max_attempts_per_pr: 2
+  max_files: 3
+  max_changed_lines: 40
+  allow_new_test_files: true
+  test_paths: ["tests/**", "**/test_*.py"]
+
+thresholds:
+  small_max_lines: 80
+  small_max_code_files: 3
+  large_min_lines: 400
+  large_min_files: 15
+
+protected_paths:
+  - ".github/**"
+  - "src/pr_agent/**"
+  - "pyproject.toml"
+  - "requirements*.txt"
+  - "AGENTS.md"
+  - "CLAUDE.md"
+  - "PROJECT.md"
+  - "MILESTONE_*.md"
+  - "LICENSE*"
+  - "**/migrations/**"
+  - "Dockerfile*"
+
+hold_markers: ["WIP", "DNM", "do not merge", "[DEMO"]
+docs_link_allowlist: ["github.com", "docs.github.com", "platform.claude.com", "docs.python.org"]
+
+categories:
+  dependency_patch: fix_then_merge
+  refactor: review_only

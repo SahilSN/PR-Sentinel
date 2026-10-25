@@ -18,28 +18,46 @@ MAX_STATE_BYTES = 32_000
 DEFAULT_BOT_LOGIN = "github-actions[bot]"
 
 
-def encode_state(result: ReviewResult) -> str:
-    """Base64 keeps the JSON from ever containing `-->` or anything Markdown would render."""
+def encode_state(result: ReviewResult, extras=None, previous: PreviousReview | None = None) -> str:
+    """Base64 keeps the JSON from ever containing `-->` or anything Markdown would render.
+
+    `extras` (maintainer.StateExtras) carries Milestone 3 state; actions keep the last 20 across runs."""
+    actions = ((previous.actions if previous else []) + list(result.actions))[-20:]
     state = PreviousReview(
         head_sha=result.head_sha,
         status=result.status,
         open_findings=result.open_findings,
         resolved_findings=result.resolved_findings[-20:],
+        summary=result.summary[:2000],
+        unreviewed_files=result.unreviewed_files[:50],
+        triage=result.triage,
+        decision=result.triage.decision if result.triage else None,
+        autofix_attempts=extras.autofix_attempts if extras else 0,
+        failed_fix_ids=extras.failed_fix_ids if extras else [],
+        human_override=extras.human_override if extras else False,
+        actions=actions,
     )
     payload = base64.b64encode(state.model_dump_json().encode()).decode()
-    if len(payload) > MAX_STATE_BYTES:
-        state.resolved_findings = []
+    # Over the size cap: drop the least important history first.
+    for trim in ("actions", "resolved_findings", "signals"):
+        if len(payload) <= MAX_STATE_BYTES:
+            break
+        if trim == "signals" and state.triage:
+            state.triage.signals = state.triage.signals[:10]
+        elif trim != "signals":
+            setattr(state, trim, [])
         payload = base64.b64encode(state.model_dump_json().encode()).decode()
     return f"{STATE_PREFIX}{payload} -->"
 
 
 def decode_state(body: str) -> PreviousReview | None:
     """Parse the state block. Treat it as untrusted: anything malformed is ignored, not trusted."""
-    match = STATE_RE.search(body)
-    if not match or len(match.group(1)) > MAX_STATE_BYTES:
+    # Our block is always last; anything earlier (e.g. inside a quoted patch preview) is ignored.
+    found = STATE_RE.findall(body)
+    if not found or len(found[-1]) > MAX_STATE_BYTES:
         return None
     try:
-        return PreviousReview.model_validate(json.loads(base64.b64decode(match.group(1), validate=True)))
+        return PreviousReview.model_validate(json.loads(base64.b64decode(found[-1], validate=True)))
     except (ValueError, ValidationError):
         return None
 
