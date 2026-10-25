@@ -622,3 +622,20 @@ def test_recent_auto_merge_count():
              {"merged_at": "2026-10-24T11:30:00Z", "labels": []},      # merged by a person
              {"merged_at": None, "labels": label}]                     # closed, not merged
     assert count_recent_auto_merges(pulls, now) == 1
+
+
+def test_github_error_during_locked_recheck_fails_closed_without_crashing(env, tmp_path):
+    class Flaky(FakeGitHub):
+        def handler(self, request):
+            if request.method == "GET" and request.url.path == "/repos/SahilSN/ern/pulls" \
+                    and request.url.params.get("state") == "closed":
+                self.requests.append(request)
+                return __import__("httpx").Response(502, json={"message": "Bad Gateway"})
+            return super().handler(request)
+
+    fake = Flaky(load_fixture("m3_docs_typo_pr.json"))
+    result = run(fake, tmp_path)  # must not raise
+    assert not fake.merged and result["triage"]["decision"] == "review_only"
+    assert any("could not re-check" in n for n in result["triage"]["notes"])
+    assert len(fake.comments) == 1  # the PR still gets its updated comment
+    assert any(r.method == "DELETE" and "merge-lock" in r.url.path for r in fake.requests)  # lock released
