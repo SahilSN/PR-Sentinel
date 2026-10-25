@@ -18,12 +18,13 @@ from pydantic import ValidationError
 
 from . import config
 from .agent import Tracer, run_review
-from .ci import ci_report_from_fixture, fetch_ci_report
+from .ci import FAILED, ci_report_from_fixture, fetch_ci_report, wait_for_checks
 from .claude_client import ClaudeModel, FakeModel
 from .github_client import GitHubClient, GitHubError
 from .review import new_side_text, render_review_comment
 from .schemas import ChangedFile, PreviousReview, PullRequestInfo, ReviewResult
 from .executor import Executor, tree_modes
+from .guard import run_guard
 from .maintainer import Sources, facts_from_fixture, facts_from_github, run_maintainer
 from .policy import PRFacts
 from .schemas import CATEGORIES, Stats
@@ -60,6 +61,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     m3.add_argument("--reclassify", choices=CATEGORIES, help="owner category override (/sentinel reclassify)")
     m3.add_argument("--config", type=Path, help="policy config file (fixture runs only; live runs read the default branch)")
     m3.add_argument("--run-url", help="link to this Actions run, included in merge commit messages")
+    m3.add_argument("--follow-ci", action="store_true",
+                    help="after starting CI itself (autofix, merge), wait for it and carry on: GitHub doesn't fire "
+                         "workflow_run for CI started with GITHUB_TOKEN")
     return p.parse_args(argv)
 
 
@@ -252,7 +256,40 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
     decision = result.triage.decision if result.triage else "review_only"
     print(f"Status: {result.status}. Decision: {decision} (autonomy {autonomy}). Result written to {result_path}",
           file=sys.stderr)
-    return EXIT_FAILED if result.status == "error" else EXIT_OK
+    code = EXIT_FAILED if result.status == "error" else EXIT_OK
+    if args.follow_ci and args.publish and not args.fixture:
+        code = follow_up(args, gh, model, cfg, pr, extras) or code
+    return code
+
+
+CI_WAIT_SECONDS = 360
+
+
+def follow_up(args, gh: GitHubClient, model, cfg, pr: PullRequestInfo, extras) -> int | None:
+    """Carry on after CI this run started itself. GitHub doesn't fire `workflow_run` for CI dispatched with
+    GITHUB_TOKEN (verified live on PR #24), so neither the merge gate nor the post-merge guard would ever run."""
+    checks = cfg.merge.required_checks
+    if extras.followup_sha:
+        print(f"Waiting for CI ({', '.join(checks)}) on the autofix commit {extras.followup_sha[:7]}…")
+        outcome = wait_for_checks(gh, pr.repo, extras.followup_sha, checks, CI_WAIT_SECONDS)
+        if outcome is None:
+            print("CI on the autofix commit didn't finish in time; the PR is re-checked on its next event.")
+            return None
+        # What the merge gate would do: a fresh review of the autofix commit, then merge if every check passes.
+        again = ["--repo", pr.repo, "--pr", str(pr.pr_number), "--gate", "--publish", "--follow-ci",
+                 "--output-dir", str(args.output_dir)] + (["--run-url", args.run_url] if args.run_url else []) \
+            + (["--fake-model"] if args.fake_model else [])
+        return main(again, gh=gh, model=model)
+    if extras.merged_sha:
+        print(f"Waiting for CI ({', '.join(checks)}) on the default branch at {extras.merged_sha[:7]}…")
+        outcome = wait_for_checks(gh, pr.repo, extras.merged_sha, checks, CI_WAIT_SECONDS)
+        if outcome is None:
+            print("CI on the default branch didn't finish in time; the post-merge guard didn't run.")
+            return None
+        failed = any(conclusion in FAILED for conclusion in outcome.values())
+        out = run_guard(gh, pr.repo, extras.merged_sha, "failure" if failed else "success", args.run_url, True)
+        print(f"Post-merge guard: {out.action}. {out.detail}")
+    return None
 
 
 if __name__ == "__main__":

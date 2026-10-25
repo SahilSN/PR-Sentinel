@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
     p.add_argument("--publish", action="store_true")
     p.add_argument("--fake-model", action="store_true")
     p.add_argument("--run-url")
+    p.add_argument("--follow-ci", action="store_true", help="wait for CI this run starts itself, then carry on")
     p.add_argument("--output-dir", default="artifacts")
     args = p.parse_args(argv)
     if not config.github_token() and gh is None:
@@ -50,6 +51,8 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
                  "--publish" if args.publish else "--dry-run"]
     if args.fake_model:
         forwarded.append("--fake-model")
+    if args.follow_ci:
+        forwarded.append("--follow-ci")
     if args.run_url:
         forwarded += ["--run-url", args.run_url]
     return cli.main(forwarded, gh=gh, model=model)

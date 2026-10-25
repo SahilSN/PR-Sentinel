@@ -25,7 +25,7 @@ jobs:
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'sentinel:hold' && github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15  # includes waiting for CI it started itself (--follow-ci)
     permissions:
       contents: write       # autofix commits, merges
       pull-requests: write  # comment, merge, review requests
@@ -53,7 +53,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python -m pr_agent.cli --repo "$REPO" --pr "$PR_NUMBER" --publish --run-url "$RUN_URL"
+        run: python -m pr_agent.cli --repo "$REPO" --pr "$PR_NUMBER" --publish --follow-ci --run-url "$RUN_URL"
       - name: Build run dashboard
         if: always() && hashFiles('artifacts/run_result.json') != ''
         continue-on-error: true
@@ -75,7 +75,7 @@ jobs:
       github.event.workflow_run.head_branch != github.event.repository.default_branch &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15  # includes waiting for CI it started itself (--follow-ci)
     permissions:
       contents: write
       pull-requests: write
@@ -106,7 +106,7 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
-        run: python -m pr_agent.gate --repo "$REPO" --sha "$SHA" --publish --run-url "$RUN_URL"
+        run: python -m pr_agent.gate --repo "$REPO" --sha "$SHA" --publish --follow-ci --run-url "$RUN_URL"
 
   post-merge-guard:
     # CI failed on the default branch: if the commit was an autonomous merge, open a revert PR and pause merges.
@@ -152,7 +152,7 @@ jobs:
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/sentinel ')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15  # includes waiting for CI it started itself (--follow-ci)
     permissions:
       contents: write
       pull-requests: write
@@ -180,4 +180,4 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENT_ID: ${{ github.event.comment.id }}
-        run: python -m pr_agent.chatops --repo "$REPO" --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --publish
+        run: python -m pr_agent.chatops --repo "$REPO" --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --publish --follow-ci
