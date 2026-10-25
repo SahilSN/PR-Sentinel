@@ -232,7 +232,7 @@ def run_maintainer(
         findings = [f for f in result.open_findings if f.id not in extras.failed_fix_ids]
         outcome = run_fixer(pr=pr, files=files, findings=findings, ci=result.ci, model=model,
                             read_source=read_source, list_repo_files=sources.list_repo_files, limits=limits,
-                            config=config)
+                            config=config, context_paths=[c.path for c in result.context_files if c.via == "related"])
         result.stats.llm_calls += outcome.llm_calls
         result.stats.input_tokens += outcome.input_tokens
         result.stats.output_tokens += outcome.output_tokens

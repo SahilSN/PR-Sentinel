@@ -46,7 +46,7 @@ class Limits:
     max_context_reads: int = 4
     max_tool_fetch_failures: int = 2
     # Milestone 3: the fixer's own budget
-    max_fix_steps: int = 4
+    max_fix_steps: int = 6
     max_fix_tokens: int = 40000
 
     @classmethod
