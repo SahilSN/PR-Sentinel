@@ -162,6 +162,9 @@ def run_maintainer(
                                tree_paths=tree_paths)
     mr = result._model_review
     model_triage = mr.triage if mr is not None else _model_triage_from_state(previous)
+    if mr is None and previous is not None and previous.head_sha == pr.head_sha:
+        notes.append("Re-checked with fresh CI and PR data. The review text and usage are from the earlier review "
+                     "of this commit (no new model call).")
     if reclassify:
         tier = CATEGORY_TIER.get(reclassify, "T2")
         model_triage = ModelTriage(category=reclassify, tier="T3" if tier == "BLOCK" else tier, confidence="high",

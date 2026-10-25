@@ -30,6 +30,7 @@ def encode_state(result: ReviewResult, extras=None, previous: PreviousReview | N
         resolved_findings=result.resolved_findings[-20:],
         summary=result.summary[:2000],
         unreviewed_files=result.unreviewed_files[:50],
+        stats=result.stats,
         triage=result.triage,
         decision=result.triage.decision if result.triage else None,
         autofix_attempts=extras.autofix_attempts if extras else 0,
