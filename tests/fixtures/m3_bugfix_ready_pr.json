@@ -1,0 +1,57 @@
+{
+  "repo": "SahilSN/ern",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_review": null,
+  "sentinel_config": {
+    "autonomy": "merge",
+    "owners": [
+      "SahilSN"
+    ]
+  },
+  "pr_number": 33,
+  "title": "Fix crash for unknown and mixed-case usernames",
+  "head_sha": "3333333333333333333333333333333333333333",
+  "changed_files": [
+    {
+      "path": "demo/user_service.py",
+      "status": "modified",
+      "additions": 5,
+      "deletions": 2,
+      "patch": "@@ -1,9 +1,12 @@\n USERS = {\"ada\": {\"name\": \"Ada\"}}\n \n \n def find_user(username):\n-    return USERS.get(username)\n+    return USERS.get(username.lower())\n \n \n def greeting(username):\n-    return \"Hello, \" + USERS[username][\"name\"]\n+    user = find_user(username)\n+    if user is None:\n+        return \"Hello, stranger!\"\n+    return \"Hello, \" + user[\"name\"]"
+    },
+    {
+      "path": "tests/test_user_service.py",
+      "status": "added",
+      "additions": 5,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,5 @@\n+from demo.user_service import greeting\n+\n+\n+def test_greeting_is_case_insensitive():\n+    assert greeting(\"ADA\") == \"Hello, Ada\""
+    }
+  ],
+  "file_contents": {
+    "demo/user_service.py": "USERS = {\"ada\": {\"name\": \"Ada\"}}\n\n\ndef find_user(username):\n    return USERS.get(username.lower())\n\n\ndef greeting(username):\n    user = find_user(username)\n    if user is None:\n        return \"Hello, stranger!\"\n    return \"Hello, \" + user[\"name\"]\n",
+    "tests/test_user_service.py": "from demo.user_service import greeting\n\n\ndef test_greeting_is_case_insensitive():\n    assert greeting(\"ADA\") == \"Hello, Ada\"\n",
+    "demo/__init__.py": ""
+  },
+  "base_file_contents": {
+    "demo/user_service.py": "USERS = {\"ada\": {\"name\": \"Ada\"}}\n\n\ndef find_user(username):\n    return USERS.get(username)\n\n\ndef greeting(username):\n    return \"Hello, \" + USERS[username][\"name\"]\n"
+  },
+  "ci": {
+    "total_count": 1,
+    "check_runs": [
+      {
+        "id": 900,
+        "name": "tests",
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": "3333333333333333333333333333333333333333",
+        "html_url": "https://github.com/SahilSN/ern/runs/900",
+        "output": {
+          "title": "45 passed"
+        }
+      }
+    ]
+  },
+  "pr_state": {
+    "head_ref": "fix-greeting-2"
+  }
+}

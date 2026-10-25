@@ -1,33 +1,43 @@
 name: Autonomous PR Review
 
+# PR Sentinel. Every job checks out the DEFAULT branch (trusted code) and only reads PR content through the API;
+# PR code is never run here. What it may write is set by .github/pr-sentinel.yml on the default branch, capped by
+# the repo variable SENTINEL_AUTONOMY (the kill switch: set it to `review` to stop all writes).
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  issue_comment:
+    types: [created]
 
-permissions:
-  contents: read
-  # Commenting on a PR with GITHUB_TOKEN needs pull-requests: write; issues: write alone returned 403 on PR #3.
-  pull-requests: write
-  issues: write
-  # Read CI check runs and annotations for the reviewed head commit (Milestone 2, read-only).
-  checks: read
-
-concurrency:
-  group: pr-agent-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+permissions: {}
 
 jobs:
   review:
-    # The check-run name. PR Sentinel ignores its own check when reading CI (PR_SENTINEL_SELF_CHECK must match).
+    # The check-run name. PR Sentinel ignores its own checks when reading CI (PR_SENTINEL_SELF_CHECK must match).
     name: PR Sentinel review
-    # Same-repo branches only. Never switch to pull_request_target to run untrusted PR code with secrets.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Same-repo branches only. Label events only for a person changing the hold label (never our own label writes).
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
+       github.event.label.name == 'sentinel:hold' && github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write       # autofix commits, merges
+      pull-requests: write  # comment, merge, review requests
+      issues: write         # labels
+      checks: read          # CI evidence
+      actions: write        # dispatch CI after an autofix (GITHUB_TOKEN pushes don't trigger workflows)
+    concurrency:
+      group: pr-agent-${{ github.event.pull_request.number }}
+      cancel-in-progress: false  # never cancel a run in the middle of a write
     steps:
       - uses: actions/checkout@v4
         with:
-          # Run trusted code from the default branch, not the untrusted PR head.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -39,9 +49,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          SENTINEL_AUTONOMY: ${{ vars.SENTINEL_AUTONOMY }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python -m pr_agent.cli --repo "$REPO" --pr "$PR_NUMBER" --publish
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python -m pr_agent.cli --repo "$REPO" --pr "$PR_NUMBER" --publish --run-url "$RUN_URL"
       - name: Build run dashboard
         if: always() && hashFiles('artifacts/run_result.json') != ''
         continue-on-error: true
@@ -53,3 +65,113 @@ jobs:
           name: pr-sentinel-run
           path: artifacts/
           if-no-files-found: ignore
+
+  merge-gate:
+    # CI finished on a PR commit (including a CI run dispatched after an autofix): finish a waiting merge.
+    name: PR Sentinel merge gate
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event != 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+    concurrency:
+      group: sentinel-merge
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install .
+      - name: Merge gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          SENTINEL_AUTONOMY: ${{ vars.SENTINEL_AUTONOMY }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: python -m pr_agent.gate --repo "$REPO" --sha "$SHA" --publish --run-url "$RUN_URL"
+
+  post-merge-guard:
+    # CI failed on the default branch: if the commit was an autonomous merge, open a revert PR and pause merges.
+    name: PR Sentinel post-merge guard
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    concurrency:
+      group: sentinel-merge
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install .
+      - name: Post-merge guard
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: python -m pr_agent.guard --repo "$REPO" --sha "$SHA" --conclusion "$CONCLUSION" --run-url "$RUN_URL" --publish
+
+  chatops:
+    # `/sentinel <command>` on a PR; the code checks the commenter has write access and ignores everyone else.
+    name: PR Sentinel ChatOps
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/sentinel ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+      actions: write
+    concurrency:
+      group: pr-agent-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install .
+      - name: Handle command
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          SENTINEL_AUTONOMY: ${{ vars.SENTINEL_AUTONOMY }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: python -m pr_agent.chatops --repo "$REPO" --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --publish

@@ -57,7 +57,8 @@ def build_ci_report(head_sha: str, raw_runs: list[dict], total_count: int, annot
     ignored: list[str] = []
     for raw in raw_runs[: limits.max_checks]:
         name = str(raw.get("name") or "unnamed check")
-        if name.strip().lower() == settings.self_check_name.lower():
+        lowered = name.strip().lower()
+        if lowered == settings.self_check_name.lower() or lowered.startswith("pr sentinel "):  # all our jobs
             ignored.append(f"{name} (PR Sentinel's own check)")
             continue
         run_sha = raw.get("head_sha")

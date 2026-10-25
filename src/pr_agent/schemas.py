@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -126,6 +126,110 @@ class ContextFile(BaseModel):
     truncated: bool = False
 
 
+# ---------- Milestone 3: triage, decisions, autofix, actions ----------
+
+Tier = Literal["T0", "T1", "T2", "T3", "BLOCK"]
+ModelTier = Literal["T0", "T1", "T2", "T3"]
+Decision = Literal["skip", "hold", "review_only", "auto_merge", "fix_then_merge", "suggest_fix", "escalate_owner",
+                   "block", "waiting"]
+Autonomy = Literal["off", "review", "shadow", "fix", "merge"]
+CATEGORIES = [
+    "docs", "comments_only", "formatting", "tests_only", "test_weakening", "bugfix_small", "bugfix_large", "refactor",
+    "feature_small", "feature_large", "performance", "dependency_patch", "dependency_major", "dependency_new",
+    "dependency_removed", "config", "ci_cd", "infra_deploy", "security_sensitive", "db_migration", "api_contract",
+    "architecture", "agent_self", "governance", "assets", "generated_vendored", "revert", "release", "mass_change",
+    "secrets", "suspicious", "unknown",
+]
+
+
+class BugfixAssessment(BaseModel):
+    bug: str
+    root_cause: str
+    root_cause_addressed: bool
+    regression_risk: Level
+    callers_checked: list[str] = Field(default_factory=list)
+    test_coverage: Literal["added", "existing", "none"]
+    confidence: Level
+
+
+class OwnerReviewGuide(BaseModel):
+    change_summary: str
+    key_risks: list[str] = Field(default_factory=list)
+    review_first: list[str] = Field(default_factory=list)
+    questions_for_author: list[str] = Field(default_factory=list)
+    suggested_tests: list[str] = Field(default_factory=list)
+
+
+class ModelTriage(BaseModel):
+    """Claude's view of the PR. Can only raise the tier above the deterministic floor."""
+
+    category: str
+    secondary_categories: list[str] = Field(default_factory=list)
+    tier: ModelTier
+    confidence: Level
+    rationale: str = ""
+    intent_matches_diff: bool = True
+
+    @field_validator("category")
+    @classmethod
+    def _known_category(cls, v: str) -> str:
+        return v if v in CATEGORIES else "unknown"
+
+    @field_validator("secondary_categories")
+    @classmethod
+    def _known_secondary(cls, v: list[str]) -> list[str]:
+        return [c if c in CATEGORIES else "unknown" for c in v]
+
+
+class Signal(BaseModel):
+    name: str
+    value: bool | int | str | list[str] = True
+    source: Literal["deterministic", "claude", "pr_text", "github", "config"] = "deterministic"
+    detail: str = ""
+
+
+class TriageResult(BaseModel):
+    """Optional `triage` block of run_result.json (Milestone 3)."""
+
+    category: str
+    secondary_categories: list[str] = Field(default_factory=list)
+    tier: Tier
+    deterministic_floor: Tier
+    claude_tier: ModelTier | None = None
+    confidence: Level = "low"
+    size: Literal["XS", "S", "M", "L", "XL"] = "XS"
+    signals: list[Signal] = Field(default_factory=list)
+    decision: Decision = "review_only"
+    autonomy: Autonomy = "review"
+    blocked_by: list[str] = Field(default_factory=list)
+    would_have: list[str] | None = None  # shadow mode: what it would have done
+    waiting_for: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    notes: list[str] = Field(default_factory=list)
+    bugfix_assessment: BugfixAssessment | None = None
+    owner_review_guide: OwnerReviewGuide | None = None
+
+
+class AutofixRecord(BaseModel):
+    attempt: int
+    proposed: bool
+    applied: bool = False
+    rejected_reason: str | None = None
+    commit_sha: str | None = None
+    finding_ids: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    reason: str = ""
+    risk_notes: str = ""
+    patch_preview: str = ""  # bounded unified diff, shown in the comment for suggest_fix
+
+
+class Action(BaseModel):
+    """One write the executor performed (or, in shadow mode, would have)."""
+
+    model_config = ConfigDict(extra="allow")
+    type: str
+
+
 class Stats(BaseModel):
     llm_calls: int = 0
     tool_calls: int = 0
@@ -150,6 +254,12 @@ class ReviewResult(BaseModel):
     ci: CIReport | None = None
     escalation: Escalation | None = None
     context_files: list[ContextFile] = Field(default_factory=list)
+    # Milestone 3 additions, also optional.
+    triage: TriageResult | None = None
+    autofix: AutofixRecord | None = None
+    actions: list[Action] = Field(default_factory=list)
+    # Claude's raw structured review (triage, bug-fix assessment, guide) for the policy engine; never serialized.
+    _model_review: "ModelReview | None" = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _stop_reason_required(self) -> "ReviewResult":
@@ -166,6 +276,15 @@ class PreviousReview(BaseModel):
     status: Status
     open_findings: list[Finding] = Field(default_factory=list)
     resolved_findings: list[Finding] = Field(default_factory=list)
+    # Milestone 3 state (optional, so older state blocks still parse)
+    summary: str = ""
+    unreviewed_files: list[str] = Field(default_factory=list)
+    triage: TriageResult | None = None
+    decision: Decision | None = None
+    autofix_attempts: int = 0
+    failed_fix_ids: list[str] = Field(default_factory=list)  # findings an autofix didn't fix (CI still red)
+    human_override: bool = False
+    actions: list[Action] = Field(default_factory=list)
 
 
 # ---------- What Claude must return (controller adds trusted metadata) ----------
@@ -190,6 +309,48 @@ class ModelReview(BaseModel):
     needs_human_reason: str | None = None
     ci_likely_cause: str | None = None
     ci_next_step: str | None = None
+    triage: ModelTriage | None = None
+    bugfix_assessment: BugfixAssessment | None = None
+    owner_review_guide: OwnerReviewGuide | None = None
+
+
+def _strict(properties: dict) -> dict:
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+
+def _nullable(schema: dict) -> dict:
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+def triage_json_schemas() -> dict:
+    level = {"type": "string", "enum": ["low", "medium", "high"]}
+    strings = {"type": "array", "items": {"type": "string"}}
+    return {
+        "triage": _strict({
+            "category": {"type": "string", "enum": CATEGORIES},
+            "secondary_categories": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
+            "tier": {"type": "string", "enum": ["T0", "T1", "T2", "T3"]},
+            "confidence": level,
+            "rationale": {"type": "string"},
+            "intent_matches_diff": {"type": "boolean"},
+        }),
+        "bugfix_assessment": _nullable(_strict({
+            "bug": {"type": "string"},
+            "root_cause": {"type": "string"},
+            "root_cause_addressed": {"type": "boolean"},
+            "regression_risk": level,
+            "callers_checked": strings,
+            "test_coverage": {"type": "string", "enum": ["added", "existing", "none"]},
+            "confidence": level,
+        })),
+        "owner_review_guide": _nullable(_strict({
+            "change_summary": {"type": "string"},
+            "key_risks": strings,
+            "review_first": strings,
+            "questions_for_author": strings,
+            "suggested_tests": strings,
+        })),
+    }
 
 
 def model_review_json_schema() -> dict:
@@ -220,11 +381,48 @@ def model_review_json_schema() -> dict:
             "needs_human_reason": {"type": ["string", "null"]},
             "ci_likely_cause": {"type": ["string", "null"]},
             "ci_next_step": {"type": ["string", "null"]},
+            **triage_json_schemas(),
         },
         "required": ["summary", "open_findings", "resolved_finding_ids", "needs_human", "needs_human_reason",
-                     "ci_likely_cause", "ci_next_step"],
+                     "ci_likely_cause", "ci_next_step", "triage", "bugfix_assessment", "owner_review_guide"],
         "additionalProperties": False,
     }
+
+
+class FileEdit(BaseModel):
+    path: str
+    old_text: str
+    new_text: str
+
+
+class NewFile(BaseModel):
+    path: str
+    content: str
+
+
+class FixProposal(BaseModel):
+    """What the fixer (Claude) proposes. Deterministic Python validates and applies it; Claude never writes."""
+
+    can_fix: bool
+    reason: str = ""
+    finding_ids: list[str] = Field(default_factory=list)
+    edits: list[FileEdit] = Field(default_factory=list)
+    new_files: list[NewFile] = Field(default_factory=list)
+    commit_message: str = ""
+    risk_notes: str = ""
+
+
+def fix_proposal_json_schema() -> dict:
+    return _strict({
+        "can_fix": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "finding_ids": {"type": "array", "items": {"type": "string"}},
+        "edits": {"type": "array", "items": _strict({
+            "path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}})},
+        "new_files": {"type": "array", "items": _strict({"path": {"type": "string"}, "content": {"type": "string"}})},
+        "commit_message": {"type": "string"},
+        "risk_notes": {"type": "string"},
+    })
 
 
 def finding_id(path: str, kind: str) -> str:

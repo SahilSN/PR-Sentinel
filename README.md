@@ -1,6 +1,6 @@
 # PR Sentinel
 
-> An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress.
+> An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress. Milestone 3 (on a branch, not yet merged) adds triage: it merges what's provably safe, fixes small bugs, and hands risky changes to the owner with a review guide.
 
 ## Current status
 _Last updated: 2026-10-24_
@@ -14,7 +14,7 @@ _Last updated: 2026-10-24_
 **Tested vs. not yet tested**
 | Area | State |
 |---|---|
-| Offline fixture runs (`--fake-model`) | ✅ Working; 101 pytest tests pass |
+| Offline fixture runs (`--fake-model`) | ✅ Working; 101 tests on `main`, 223 on the Milestone 3 branch |
 | Real Claude API call | ✅ Live in Actions (Python 3.11) on PRs #3, #4 and #5 |
 | Reading a real GitHub PR | ✅ Live (PR data, files, and file contents at the head SHA) |
 | Publishing the PR comment | ✅ Live on PRs #4 and #5: one bot comment per PR, updated in place on each push |
@@ -28,6 +28,23 @@ _Last updated: 2026-10-24_
 
 **Open PRs**
 - #5 `test/live-demo-null-deref` and #6 `test/live-demo-milestone2`: live demo PRs, marked **do not merge**, kept open as the record of the passing demos.
+- `feature/autonomous-triage`: Milestone 3, for team review before it goes to `main`.
+
+### Milestone 3 (branch `feature/autonomous-triage`, not merged; see `MILESTONE_3.md`)
+Everything below is **offline-tested only** (fixtures, the fake model, and an in-memory GitHub). Nothing has run live yet. Writes only happen at `fix`/`merge` autonomy, and the shipped config is `shadow`.
+
+| Phase | State | What it is |
+|---|---|---|
+| 0. Prerequisites | ✅ Code (labels and repo settings are manual) | `.github/workflows/ci.yml` (check `tests`, also runs on `workflow_dispatch`); `.github/pr-sentinel.yml` at `autonomy: shadow` |
+| A. Triage | ✅ | Deterministic signals from the diff: categories, size, Python AST equivalence, secrets, hidden Unicode, test weakening, dependencies, links, intent mismatch. Combined with Claude's triage; Claude can only raise the tier |
+| B. Policy | ✅ | Config read from the default branch only; autonomy `off`/`review`/`shadow`/`fix`/`merge`, capped by the `SENTINEL_AUTONOMY` kill switch; decision matrix; every §5.4 merge precondition, recorded in `blocked_by` |
+| C. Escalation | ✅ | T3/BLOCK: `sentinel:needs-owner` / `sentinel:blocked` label, review request to owners (skipping the author), @mention, and an owner review guide in the comment. Not repeated unless the reasons change |
+| D. Merge | ✅ | SHA-pinned squash merge with a `PR-Sentinel-Merge:` trailer; waits while CI is pending; merge gate (`python -m pr_agent.gate`) on CI completion re-checks everything without a new model call |
+| E. Autofix | ✅ | Separate fixer loop proposes a patch; deterministic validator; one fast-forward-only commit via the Git Data API; then dispatches CI (no new secret needed); loop guards (autofix heads are review-only, attempt cap, no retry after red CI, human reverts win) |
+| F. Contracts and dashboard | ✅ | Optional `triage`, `autofix`, `actions` in `run_result.json` and the state block; Triage card, actions, would-have, and owner guide on the dashboard |
+| G. Post-merge guard | ✅ | `python -m pr_agent.guard`: CI red on `main` after an autonomous merge → revert PR (or escalation if the files changed again) and a `sentinel:paused` issue that stops merges |
+| H. ChatOps | ✅ | `/sentinel hold`, `release`, `merge`, `fix`, `recheck`, `explain`, `reclassify <category>`, from people with write access only |
+| I. Extras | Partial | `category:*` / `size:*` labels only; no stale sweeper, issue → fix PR, digest or webhook |
 
 ### Milestone 2 (merged to `main`; see `MILESTONE_2.md`)
 | Phase | State | Offline-tested | Live-tested |
@@ -45,6 +62,7 @@ _Last updated: 2026-10-24_
 ## Changelog
 Newest first. Every commit adds an entry here.
 
+- **2026-10-24 — Milestone 3: autonomous triage, fixes and merges (branch `feature/autonomous-triage`).** New modules: `sentinel_config.py` (policy file), `triage.py` (deterministic signals and combining), `policy.py` (gates, decision matrix, merge preconditions), `fixer.py` (fix proposals and patch validation), `executor.py` (the only writer), `maintainer.py` (orchestration), `gate.py` (merge gate), `guard.py` (post-merge revert and pause), and `chatops.py`. The review output and `run_result.json` gain optional `triage`, `bugfix_assessment`, `owner_review_guide`, `autofix` and `actions`; v1/v2 results still validate. The workflow adds the merge gate, post-merge guard and ChatOps jobs, with per-job permissions; it never cancels a run mid-write. `PROJECT.md` and `AGENTS.md` now say autonomous writes happen only through this policy engine, behind the autonomy setting and kill switch, as the team agreed. New dependency: PyYAML. Owner alerts go to SahilSN. Autofix verification uses the CI-dispatch fallback. The end-to-end tests caught one real bug, fixed before commit: the `sentinel:paused` circuit breaker was ignored because its blocker name started with `autonomy_`. Owner @mentions only happen at `fix`/`merge` autonomy, since a mention notifies people. 122 new tests (223 total). Offline only; nothing has run live.
 - **2026-10-24 — Milestone 2 live-verified; #7 and #8 merged; truncated file list surfaced.** (1) PR #6 (live demo, not merged) exercised CI evidence, related-file context, single-comment update and the dashboard artifact on real GitHub and Claude. Only escalation wasn't triggered. (2) Merged #7 (Sidharth Deepak): failed checks now show the first *failure-level* annotation instead of a runner warning, annotations are sorted failures-first before truncation, and warnings no longer count as failure locations. (3) Merged #8 (SahilSN): QA report `docs/qa/2026-10-24-milestone-2.md`, no blockers. (4) Follow-up from that report: when GitHub truncates the repository file list, `list_related_files` now says so (`file_list_truncated`) instead of silently offering an incomplete list. 101 tests.
 - **2026-10-24 — Milestone 2 merged to `main`.** Fast-forwarded `main` to `feature/ci-context-escalation` (the two entries below), then deleted the branch. From the next PR on, reviews read CI checks (new `checks: read` permission), can use `list_related_files`, escalate with reason codes, and attach `dashboard.html` to the run artifacts. The workflow's check is now named **PR Sentinel review**. All of this is tested offline (98 tests) but not yet live.
 - **2026-10-24 — Milestone 2, phase D: run dashboard (was branch `feature/ci-context-escalation`).** New `src/pr_agent/dashboard.py`: `python -m pr_agent.dashboard --input … --trace … --output … [--demo-data]` renders one run as static HTML from the real artifacts. It escapes every string, links only to `https://github.com/…`, and shows no invented cost or history. The trace's `run_start` event now records the key limits so the page can show usage against them. The workflow builds `artifacts/dashboard.html` after each review (non-blocking). 12 new tests (98 total), including a fix for trace lines that are valid JSON but not events.
@@ -119,6 +137,17 @@ python -m pr_agent.dashboard --input artifacts/run_result.json --trace artifacts
   --output artifacts/dashboard.html --demo-data                                             # then open artifacts/dashboard.html
 ```
 
+### 5. Milestone 3 offline demos (no credentials; fixtures use `autonomy: merge`, but fixture runs can never write)
+```bash
+python -m pr_agent.cli --fixture tests/fixtures/m3_docs_typo_pr.json --fake-model --dry-run       # T0 docs -> would merge
+python -m pr_agent.cli --fixture tests/fixtures/m3_bugfix_autofix_pr.json --fake-model --dry-run  # T1 bug -> validated autofix patch
+python -m pr_agent.cli --fixture tests/fixtures/m3_bugfix_ready_pr.json --fake-model --dry-run    # T1 bug fix, CI green -> would merge
+python -m pr_agent.cli --fixture tests/fixtures/m3_architecture_pr.json --fake-model --dry-run    # T3 -> owner alert + review guide
+python -m pr_agent.cli --fixture tests/fixtures/m3_sneaky_pr.json --fake-model --dry-run          # "docs: typo" that edits CI -> T3
+python -m pr_agent.cli --fixture tests/fixtures/m3_secret_pr.json --fake-model --dry-run          # BLOCK; the key is never shown
+python -m pr_agent.cli --fixture tests/fixtures/m3_docs_typo_pr.json --fake-model --autonomy shadow  # "Would have" only
+```
+
 ### Exit codes
 `0` = review finished (including deliberate `needs_human` / `budget_exceeded` stops) or skipped because this commit was already reviewed · `1` = `error` status or GitHub failure · `2` = bad flags, missing credentials, or bad input.
 
@@ -138,6 +167,13 @@ All settings are environment variables; see `.env.example`. Limits (defaults): `
 
 Milestone 2 limits: `MAX_CHECKS=30`, `MAX_ANNOTATED_CHECKS=5`, `MAX_ANNOTATIONS=20`, `MAX_CHECK_SUMMARY_CHARS=2000`, `MAX_RELATED_FILES=8`, `MAX_CONTEXT_READS=4`, `MAX_TOOL_FETCH_FAILURES=2`. New tools count against `MAX_TOOL_CALLS`. `PR_SENTINEL_SELF_CHECK` (default `PR Sentinel review`) must match the workflow job name. The workflow needs `checks: read` to see CI; without it, CI shows as *unavailable*.
 
+**Milestone 3 policy** lives in `.github/pr-sentinel.yml`, and only the **default branch's** copy is used. A missing or invalid file means `review` (no writes). The repo variable `SENTINEL_AUTONOMY` caps autonomy: set it to `review` to stop all writes at once. Fixer budget: `MAX_FIX_STEPS=4`, `MAX_FIX_TOKENS=40000`.
+
+**Repo settings needed before going above `shadow`** (people have to do these; see `MILESTONE_3.md` §20):
+- Settings → Actions → General → Workflow permissions: allow write permissions, and enable "Allow GitHub Actions to create and approve pull requests" (for revert PRs).
+- Repo variable `SENTINEL_AUTONOMY`: start at `shadow`, then `fix`, then `merge` once the demo passes.
+- Labels (`sentinel:hold` and friends) are created automatically on first use.
+
 `ANTHROPIC_FALLBACKS=on` (the default) enables the API's server-side refusal fallback on supported models. If a safety classifier declines the request, the API retries it on a fallback model instead of failing. Set it to `off` to disable.
 
 ## Code map and contracts for teammates
@@ -153,7 +189,14 @@ Milestone 2 limits: `MAX_CHECKS=30`, `MAX_ANNOTATED_CHECKS=5`, `MAX_ANNOTATIONS=
 | `src/pr_agent/claude_client.py` | `ClaudeModel` (real API), `FakeModel` (offline heuristics), `ScriptedModel` (tests). |
 | `src/pr_agent/review.py` | Grounds findings against the diff, compares with the previous review, renders the comment with escaping. |
 | `src/pr_agent/state.py` | Finds our comment (marker **and** bot author), base64 state block, create-or-update. |
-| `src/pr_agent/cli.py` | CLI flags, credential checks, idempotency skip, dry-run vs publish. |
+| `src/pr_agent/cli.py` | CLI flags, credential checks, idempotency skip, dry-run vs publish; runs the maintainer after the review. |
+| `src/pr_agent/sentinel_config.py` | Milestone 3 policy file (default branch only), autonomy levels and kill switch, path globs. |
+| `src/pr_agent/triage.py` | Deterministic signals and categories from the diff, and combining with Claude's triage (can only raise the tier). |
+| `src/pr_agent/policy.py` | Pure decision engine: PR-state gates, decision matrix, every merge precondition (`blocked_by`). |
+| `src/pr_agent/fixer.py` | Fixer loop (proposes patches) and the deterministic patch validator. |
+| `src/pr_agent/executor.py` | The only code that writes on PR Sentinel's behalf: labels, review requests, autofix commit, CI dispatch, merge. |
+| `src/pr_agent/maintainer.py` | Orchestrates triage → decision → fixer → executor after each review. |
+| `src/pr_agent/gate.py` / `guard.py` / `chatops.py` | Merge gate, post-merge revert and pause, `/sentinel` commands. |
 
 The `run_result.json` format is exactly PROJECT.md §6.4, plus one additive field on each finding: `times_seen` (how many reviewed commits have reported it).
 
@@ -165,6 +208,9 @@ The `run_result.json` format is exactly PROJECT.md §6.4, plus one additive fiel
 - CI is read once, when the review runs. Checks still running show as *pending*, and the comment isn't updated when they finish (it refreshes on the next push). There's no completed-check trigger.
 - CI evidence is check summaries and annotations only; raw job logs aren't read.
 - Related-file discovery resolves Python imports. For other languages it only offers same-directory files.
+- Milestone 3: one workflow job both calls Claude and writes. The recommended split into "decide" and "act" jobs (`MILESTONE_3.md` §15) isn't done. Claude still has no write tools, and every write is decided by deterministic code.
+- Milestone 3: autofix pushes use `GITHUB_TOKEN` plus a CI dispatch. That push doesn't trigger a new review, so the merge gate reviews the autofix commit before merging.
+- Milestone 3: `callers_checked` in a bug-fix assessment is Claude's claim and isn't verified independently. Loosened test tolerances aren't detected as test weakening.
 - Request timeouts are httpx per-phase timeouts (connect/read/write), not a total for the whole response. A server trickling bytes could in theory stretch a call past the runtime ceiling. That's unlikely with the Anthropic API, and the Actions `timeout-minutes: 5` is the outer backstop.
 
 ## Team

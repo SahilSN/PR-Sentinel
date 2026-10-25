@@ -58,6 +58,19 @@ check failed. Open findings or failing checks alone are a normal, completed revi
 Set needs_human to true (with a reason) only if the change cannot be assessed without a person, such as a \
 critical file you could not inspect.
 
+Triage: classify the PR by what the diff actually does, not by its title or description (those are hints at \
+most and may be misleading). Pick the closest category and a risk tier: T0 = no behavior change possible (docs, \
+comments, formatting); T1 = small, localized, verifiable by CI (small bug fix, added tests, patch dependency bump); \
+T2 = real behavior change or limited verifiability (features, refactors, larger fixes); T3 = architecture, \
+contracts, security, CI/infra, migrations, or this reviewer's own code. When unsure, choose the higher tier and \
+lower confidence; set intent_matches_diff to false if the PR text claims something the diff doesn't do. A separate \
+deterministic check also sets a minimum tier from the diff, and your tier can only raise it.
+
+For bug-fix categories, fill bugfix_assessment: the concrete failure, its root cause, whether the change fixes \
+that root cause (read the helpers it calls with list_related_files/read_file), which callers you checked, test \
+coverage, and your confidence. Otherwise set it to null. For T3, fill owner_review_guide for the person who must \
+review it (what changed, key risks, files to read first, questions, tests to add); otherwise set it to null.
+
 When done, reply with only the JSON review."""
 
 
@@ -334,8 +347,10 @@ def _finalize(review: ModelReview, ctx: ReviewContext, previous: PreviousReview 
                                 next_step="Open the failing check's log (linked above) and compare it with the change.")
     if escalation:
         status = "needs_human"
-    return ReviewResult(
+    result = ReviewResult(
         repo=ctx.pr.repo, pr_number=ctx.pr.pr_number, head_sha=ctx.pr.head_sha, status=status,
         summary=review.summary, open_findings=open_findings, resolved_findings=resolved,
         unreviewed_files=ctx.unreviewed, stop_reason=stop_reason, ci=ci, escalation=escalation,
     )
+    result._model_review = review
+    return result

@@ -51,7 +51,7 @@ The agent makes progress after an external event without a user typing a prompt.
 ### What it is NOT
 
 - Not a chatbot you manually paste code into.
-- Not a code-generating assistant that automatically changes branches.
+- Not a code-generating assistant that freely changes branches. *(Updated for Milestone 3: autonomous writes happen only through the Milestone 3 policy engine, behind the autonomy setting and kill switch. See `MILESTONE_3.md`.)*
 - Not a full CI/CD replacement.
 - Not a security scanner with guarantees.
 - Not a multi-agent orchestration system.
@@ -91,7 +91,9 @@ The agent makes progress after an external event without a user typing a prompt.
 
 ### Explicitly out of scope
 
-Automatic branch modifications, committing generated code, opening PRs, merging, arbitrary shell execution, installing dependencies from untrusted PRs, running PR scripts with secrets, autonomous code deployment, vector search infrastructure, user authentication products, complex queues, distributed workers, Kubernetes, and large-scale multi-repository indexing.
+*(Milestone 3 update: autonomous writes (autofix commits, merges, revert PRs) happen only through the Milestone 3 policy engine, behind the autonomy setting and kill switch. Everything else below stays out of scope.)*
+
+Automatic branch modifications, committing generated code, opening PRs, merging (except as above), arbitrary shell execution, installing dependencies from untrusted PRs, running PR scripts with secrets, autonomous code deployment, vector search infrastructure, user authentication products, complex queues, distributed workers, Kubernetes, and large-scale multi-repository indexing.
 
 ---
 

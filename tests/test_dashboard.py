@@ -95,3 +95,18 @@ def test_live_result_links_to_pr_but_demo_does_not():
 def test_missing_input_is_a_clear_error(tmp_path, capsys):
     assert main(["--input", str(tmp_path / "nope.json"), "--output", str(tmp_path / "d.html")]) == 2
     assert "could not read run result" in capsys.readouterr().err
+
+
+def test_triage_panel_escapes_and_shows_shadow_banner():
+    from pr_agent.schemas import Action, OwnerReviewGuide, Signal, TriageResult
+    t = TriageResult(category="agent_self", tier="T3", deterministic_floor="T3", decision="escalate_owner",
+                     autonomy="shadow", would_have=[EVIL], signals=[Signal(name=EVIL, value=[EVIL])],
+                     owner_review_guide=OwnerReviewGuide(change_summary=EVIL, key_risks=[EVIL]))
+    html = render_dashboard(base(triage=t, actions=[Action(type="label", labels=[EVIL])]), [])
+    assert "Shadow mode" in html and ">T3<" in html and "Owner review guide" in html
+    assert "<script" not in html and "<img" not in html
+
+
+def test_v1_and_v2_results_render_without_triage():
+    html = render_dashboard(base(), [])
+    assert "Triage" not in html

@@ -35,6 +35,25 @@ def diff_line_numbers(patch: str | None) -> set[int]:
     return lines
 
 
+def added_lines(patch: str | None):
+    """Yield (new_line_number, text) for every added line in a unified diff."""
+    current = None
+    for raw in (patch or "").splitlines():
+        m = HUNK_RE.match(raw)
+        if m:
+            current = int(m.group(1))
+            continue
+        if current is None or raw.startswith("-") or raw.startswith("\\"):
+            continue
+        if raw.startswith("+"):
+            yield current, raw[1:]
+        current += 1
+
+
+def removed_lines(patch: str | None) -> list[str]:
+    return [raw[1:] for raw in (patch or "").splitlines() if raw.startswith("-") and not raw.startswith("---")]
+
+
 def new_side_text(patch: str | None) -> str:
     """Best-effort reconstruction of visible new-side code from a patch (fixture mode has no full files)."""
     if not patch:
@@ -151,12 +170,14 @@ STATUS_LABEL = {
 SEVERITY_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
 
 
-def render_review_comment(result: ReviewResult, state_block: str = "") -> str:
+def render_review_comment(result: ReviewResult, state_block: str = "", owners: list[str] | None = None) -> str:
     from .state import MARKER  # local import avoids a cycle
 
     out = [MARKER, "## PR Sentinel Review", "", f"Reviewed commit: {_code(result.head_sha)}", ""]
     out.append(_escape(result.summary))
     out.append("")
+    if result.triage is not None:
+        out += render_triage_sections(result, owners or [])
 
     out.append(f"### Open findings ({len(result.open_findings)})")
     if not result.open_findings:
@@ -177,6 +198,9 @@ def render_review_comment(result: ReviewResult, state_block: str = "") -> str:
         for f in result.resolved_findings:
             out.append(f"- ✅ ~~{_escape(f.title, single_line=True, limit=200)}~~ — {_code(f.path)}")
         out.append("")
+
+    if result.autofix is not None and result.autofix.patch_preview and not result.autofix.applied:
+        out += render_suggested_fix(result.autofix.patch_preview, result.autofix.reason)
 
     if result.ci is not None:
         out += render_ci_section(result.ci) + [""]
@@ -258,3 +282,81 @@ def render_ci_section(ci: CIReport) -> list[str]:
         out.append("<sub>Checks still running are shown as pending. This comment is not updated when they finish; "
                    "it refreshes on the next push.</sub>")
     return out
+
+
+# ---------------- Milestone 3 sections ----------------
+
+DECISION_TEXT = {
+    "skip": "Skipped", "hold": "On hold: review only", "review_only": "Review only: a person merges",
+    "auto_merge": "Merge automatically", "fix_then_merge": "Fix, then merge when CI passes",
+    "suggest_fix": "Suggest a fix (not pushed); a person merges", "escalate_owner": "Owner review needed",
+    "block": "Blocked", "waiting": "Waiting before merging",
+}
+TIER_TEXT = {"T0": "T0 trivial", "T1": "T1 low risk", "T2": "T2 moderate", "T3": "T3 high risk", "BLOCK": "BLOCK"}
+LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+
+
+def _value(v) -> str:
+    return ", ".join(map(str, v[:3])) + ("…" if len(v) > 3 else "") if isinstance(v, list) else str(v)
+
+
+def render_triage_sections(result: ReviewResult, owners: list[str]) -> list[str]:
+    t = result.triage
+    out = []
+    if t.tier == "BLOCK":
+        out += ["> [!CAUTION]", "> **Blocked.** " + _escape("; ".join(
+            s.name + (f" at {s.value}" if isinstance(s.value, str) else "") for s in t.signals
+            if s.name in ("secret", "hidden_unicode", "encoded_exec", "minified_code")), single_line=True, limit=500)
+                + ". Secret values are never shown. If a credential was committed, rotate it.", ""]
+    out.append("### Triage")
+    claude = f", Claude {t.claude_tier}" if t.claude_tier else ""
+    out.append(f"**{_escape(t.category, single_line=True)}** · {TIER_TEXT[t.tier]} (deterministic floor "
+               f"{t.deterministic_floor}{claude}) · size {t.size} · confidence {t.confidence}")
+    shown = [s for s in t.signals if s.name not in ("size", "ast_equivalence", "claude_triage")][:3]
+    if shown:
+        out.append("Signals: " + "; ".join(_escape(f"{s.name}: {_value(s.value)}", single_line=True, limit=160)
+                                           for s in shown))
+    out.append(f"Decision: **{DECISION_TEXT[t.decision]}** (autonomy `{t.autonomy}`)")
+    if t.blocked_by:
+        out.append("Not merging because: " + _escape(", ".join(t.blocked_by), single_line=True, limit=400))
+    for note in t.notes:
+        out.append(f"- {_escape(note, single_line=True, limit=300)}")
+    out.append("")
+    if result.actions:
+        out.append("### Actions taken")
+        for a in result.actions:
+            extra = a.model_extra or {}
+            detail = extra.get("sha") or extra.get("merge_sha") or ", ".join(extra.get("labels") or
+                                                                              extra.get("reviewers") or [])
+            out.append(f"- {_escape(a.type, single_line=True)}" + (f": {_escape(str(detail)[:80], single_line=True)}"
+                                                                      if detail else ""))
+        out.append("")
+    if t.would_have:
+        out.append("### Would have" if t.autonomy == "shadow" else "### Not done")
+        out += [f"- {_escape(w, single_line=True, limit=200)}" for w in t.would_have]
+        out.append("")
+    if t.waiting_for:
+        out.append("### Waiting for")
+        out += [f"- {_escape(w, single_line=True, limit=200)}" for w in t.waiting_for]
+        out.append("")
+    if t.decision in ("escalate_owner", "block") and t.owner_review_guide is not None:
+        g = t.owner_review_guide
+        mentions = " ".join(f"@{o}" for o in owners if LOGIN_RE.match(o))
+        out.append("### Owner review needed")
+        if mentions:
+            out.append(f"{mentions}: this PR needs your review before it can merge.")
+        out.append(_escape(g.change_summary))
+        for title, items in (("Key risks", g.key_risks), ("Review first", g.review_first),
+                             ("Questions for the author", g.questions_for_author), ("Suggested tests", g.suggested_tests)):
+            if items:
+                out.append(f"**{title}:** " + "; ".join(_escape(i, single_line=True, limit=200) for i in items[:6]))
+        out.append("")
+    return out
+
+
+def render_suggested_fix(preview: str, reason: str) -> list[str]:
+    """Patch preview in a fence the content can't break out of; HTML comments can't fake our state block."""
+    body = preview.replace("<!--", "<\u200b!--")
+    fence = "`" * max(3, max((len(m) for m in re.findall(r"`+", body)), default=0) + 1)
+    return ["### Suggested fix (not pushed)", _escape(reason, single_line=True, limit=300),
+            f"{fence}diff", body, fence, ""]
