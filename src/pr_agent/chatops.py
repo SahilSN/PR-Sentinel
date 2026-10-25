@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
     p.add_argument("--publish", action="store_true")
     p.add_argument("--fake-model", action="store_true")
     p.add_argument("--output-dir", default="artifacts")
+    p.add_argument("--follow-ci", action="store_true", help="wait for CI this run starts itself, then carry on")
     args = p.parse_args(argv)
     gh = gh or GitHubClient(config.github_token() or "", read_only=not args.publish)
     try:
@@ -71,7 +72,8 @@ def main(argv: list[str] | None = None, gh: GitHubClient | None = None, model=No
         if args.publish:
             gh.add_reaction(args.repo, args.comment_id, "eyes")
         base = ["--repo", args.repo, "--pr", str(args.pr), "--output-dir", args.output_dir,
-                "--publish" if args.publish else "--dry-run"] + (["--fake-model"] if args.fake_model else [])
+                "--publish" if args.publish else "--dry-run"] + (["--fake-model"] if args.fake_model else []) \
+            + (["--follow-ci"] if args.follow_ci else [])
         if command == "hold":
             if args.publish:
                 gh.ensure_label(args.repo, "sentinel:hold", LABEL_COLORS["sentinel:hold"])

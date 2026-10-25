@@ -47,6 +47,9 @@ class StateExtras:
     autofix_attempts: int = 0
     failed_fix_ids: list[str] = field(default_factory=list)
     human_override: bool = False
+    # This run only (never stored): CI this run started itself, which the job must wait for (see ci.wait_for_checks).
+    followup_sha: str | None = None  # autofix commit: when its CI finishes, re-review it and merge if allowed
+    merged_sha: str | None = None  # our merge commit on the default branch: if its CI fails, run the post-merge guard
 
 
 # ---------------- facts ----------------
@@ -266,6 +269,7 @@ def run_maintainer(
                 executor.add_labels(["sentinel:autofixed"], facts.labels)
                 executor.dispatch_ci(config.ci_workflow, facts.head_ref)
                 tracer.log("ci_dispatch", workflow=config.ci_workflow)
+                extras.followup_sha = new_sha
                 decision = "waiting"
                 tri.waiting_for = [f"CI {', '.join(config.merge.required_checks)} on the autofix commit {new_sha[:7]}",
                                    "a fresh review of the autofix commit"]
@@ -318,6 +322,8 @@ def run_maintainer(
                 # A merge made with GITHUB_TOKEN doesn't start push workflows, so CI on the default branch (and the
                 # post-merge guard that listens for it) would never run. Start it explicitly.
                 executor.dispatch_ci(config.ci_workflow, facts.default_branch)
+                merge = next((a for a in reversed(executor.actions) if a.type == "merge"), None)
+                extras.merged_sha = (merge.model_extra or {}).get("merge_sha") if merge else None
 
             status, detail, fresh = executor.locked_merge(
                 tree_sha=_tree_of(executor, facts.head_sha), recheck=full_recheck,

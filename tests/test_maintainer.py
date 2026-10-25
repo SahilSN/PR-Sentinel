@@ -722,3 +722,85 @@ def test_redaction_only_touches_text_values():
                      open_findings=[FINDING])
     out = redact_secrets(r, ["open_findings"])  # a "secret" that equals a JSON key name
     assert out.open_findings == [FINDING] and out.summary == "key [redacted] here"
+
+
+# ---------------- following CI the bot started itself (--follow-ci) ----------------
+# Live on PR #24: CI dispatched with GITHUB_TOKEN passed on the autofix commit, but GitHub fired no workflow_run, so
+# the merge gate never ran and the PR stalled. The job that dispatched CI now waits for it and carries on.
+
+
+def test_wait_for_checks_waits_for_completion_and_times_out():
+    from pr_agent.ci import wait_for_checks
+    from pr_agent.github_client import GitHubError
+
+    class GH:
+        def __init__(self, answers):
+            self.answers = answers
+
+        def get_check_runs(self, repo, sha, limit):
+            answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer, len(answer)
+
+    clock = [0.0]
+    tick = dict(sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0])
+    running = [{"name": "tests", "status": "in_progress", "conclusion": None}]
+    done = [{"name": "tests", "status": "completed", "conclusion": "success"}, {"name": "lint", "status": "queued"}]
+    gh = GH([[], GitHubError(502, "flaky"), running, done])
+    assert wait_for_checks(gh, "o/r", "a" * 40, ["tests"], timeout=300, **tick) == {"tests": "success"}
+    assert clock[0] == 30  # four polls, three sleeps
+    clock[0] = 0.0
+    assert wait_for_checks(GH([running]), "o/r", "a" * 40, ["tests"], timeout=60, **tick) is None
+
+
+def test_autofix_waits_for_its_ci_then_rereviews_and_merges(env, tmp_path, monkeypatch):
+    fake = FakeGitHub(load_fixture("m3_bugfix_autofix_pr.json"))
+    ready = load_fixture("m3_bugfix_ready_pr.json")
+    waited = []
+
+    def ci_finishes(gh, repo, sha, names, timeout, **kw):
+        waited.append(sha)
+        if len(waited) == 1:  # the autofix commit: its CI passes, and the PR now shows the fixed code
+            assert sha == fake.fixture["head_sha"] != "2" * 40
+            for run_ in ready["ci"]["check_runs"]:
+                run_["head_sha"] = sha
+            fake.fixture.update(changed_files=ready["changed_files"], file_contents=ready["file_contents"],
+                                ci=ready["ci"])
+            fake.fixture["pr_state"]["commits"] = [
+                {"sha": "2" * 40, "message": "change", "login": "demo-dev"},
+                {"sha": sha, "message": "fix\n\nPR-Sentinel-Autofix: run=x attempt=1", "login": "github-actions[bot]"}]
+        return {"tests": "success"}
+
+    monkeypatch.setattr("pr_agent.cli.wait_for_checks", ci_finishes)
+    run(fake, tmp_path, "--follow-ci")
+    assert len(fake.commits_created) >= 1 and fake.dispatches[0]["ref"] == "fix-greeting"  # autofix pushed, CI started
+    assert fake.merged and len(fake.comments) == 1  # re-reviewed and merged in the same job, one comment
+    assert waited == [fake.fixture["head_sha"], "9" * 40]  # then it waited for CI on main after the merge
+    assert {"workflow": "ci.yml", "ref": "main"} in fake.dispatches
+
+
+def test_red_ci_after_our_merge_runs_the_post_merge_guard(env, tmp_path, monkeypatch):
+    guarded = []
+    monkeypatch.setattr("pr_agent.cli.wait_for_checks", lambda gh, repo, sha, names, timeout, **kw: {"tests": "failure"})
+    monkeypatch.setattr("pr_agent.cli.run_guard", lambda gh, repo, sha, conclusion, url, publish:
+                        guarded.append((sha, conclusion)) or guard.GuardOutcome("reverted"))
+    fake = FakeGitHub(load_fixture("m3_docs_typo_pr.json"))
+    run(fake, tmp_path, "--follow-ci")
+    assert fake.merged and guarded == [("9" * 40, "failure")]
+
+
+def test_without_follow_ci_nothing_waits(env, tmp_path, monkeypatch):
+    monkeypatch.setattr("pr_agent.cli.wait_for_checks", lambda *a, **k: (_ for _ in ()).throw(AssertionError("waited")))
+    run(FakeGitHub(load_fixture("m3_docs_typo_pr.json")), tmp_path)  # offline/manual runs behave as before
+
+
+def test_workflow_jobs_follow_ci_they_start():
+    import pathlib
+
+    import yaml
+
+    jobs = yaml.safe_load((pathlib.Path(__file__).parents[1] / ".github/workflows/pr-agent.yml").read_text())["jobs"]
+    for name in ("review", "merge-gate", "chatops"):
+        runs = " ".join(step.get("run", "") for step in jobs[name]["steps"])
+        assert "--follow-ci" in runs and jobs[name]["timeout-minutes"] >= 10, name
