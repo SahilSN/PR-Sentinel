@@ -1,6 +1,6 @@
 # PR Sentinel
 
-> An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress. Milestone 3 (on `main`, running at `shadow` autonomy) adds triage: it merges what's provably safe, fixes small bugs, and hands risky changes to the owner with a review guide.
+> An autonomous GitHub assistant that reviews pull requests with Claude, follows up when new commits land, remembers what it found, and stops (or asks for a human) when it can't make progress. Milestone 3 (on `main`, running at `merge` autonomy) adds triage: it merges what's provably safe, fixes small bugs, and hands risky changes to the owner with a review guide.
 
 ## Current status
 _Last updated: 2026-10-24_
