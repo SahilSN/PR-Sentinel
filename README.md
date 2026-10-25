@@ -25,7 +25,7 @@ _Last updated: 2026-10-24_
 1. Milestone 3 live checks: confirm the shadow-mode Triage section on the next real PR, then (after the repo settings below) run the `MILESTONE_3.md` §18 demo PRs at `merge` autonomy.
 2. See a live escalation (Phase C): e.g. a PR whose CI fails in a changed file for a reason the diff doesn't show.
 3. Tune review quality. On PR #3, Claude's one finding was a false positive: it flagged `httpx2` as nonexistent.
-3. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
+4. Rehearse the judge demo (PROJECT.md §14) on a fresh PR and record it as a backup in `demo/`.
 
 **Open PRs**
 - #5 `test/live-demo-null-deref` and #6 `test/live-demo-milestone2`: live demo PRs, marked **do not merge**, kept open as the record of the passing demos.
