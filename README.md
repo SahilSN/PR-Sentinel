@@ -216,24 +216,6 @@ src/pr_agent/
 
 ---
 
-## Team
-
-| | Role | Agent |
-|---|---|---|
-| **Aaryan** ([@aaryan-panda](https://github.com/aaryan-panda)) | Lead implementation; reviews and merges | Claude Code |
-| **Sidharth** ([@zylqheonix](https://github.com/zylqheonix)) | Debugging, live tests, fixes on `fix/*` branches | Claude Code |
-| **Sahil** ([@SahilSN](https://github.com/SahilSN)) | Testing, QA reports, differentiation | GPT (Codex) |
-
-The shared rules for every coding agent are in `AGENTS.md` and `CLAUDE.md`. Fixes and tests arrive as PRs and are verified and merged into `main`. QA reports live in `docs/qa/`.
-
-## Docs
-
-- `PROJECT.md`: the original specification (Milestone 1)
-- `MILESTONE_2.md`: CI evidence, related-file context, escalation, dashboard
-- `MILESTONE_3.md`: autonomous triage, fixes and merges, with the safety invariants and threat model
-- `docs/qa/`: QA reports from each review round
-- `docs/pitch.md`: pitch outline
-
 ## Changelog
 
 Milestone 1, the reviewer: one living comment, bounded runs, findings tracked across pushes. Live on #5.
