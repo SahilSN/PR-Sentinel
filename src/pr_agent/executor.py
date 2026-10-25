@@ -7,12 +7,22 @@ nothing is written: the intended action is recorded as "would have" instead.
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from .github_client import GitHubClient, GitHubError
 from .policy import AUTOFIX_TRAILER, MERGE_TRAILER
 from .schemas import Action
 from .tool_registry import RepoEntry
+
+# Repository-wide merge lock (MILESTONE_3.md §7 "serialize merges"): a git ref outside refs/heads, so it's not a
+# branch and pushes nothing. Creating it is atomic; a crashed holder's lock expires after LOCK_TTL_SECONDS.
+LOCK_REF = "sentinel/merge-lock"
+LOCK_TTL_SECONDS = 600
+LOCK_WAIT_SECONDS = 90  # merges take seconds, so a short wait in the job beats stalling until the next event
+LOCK_POLL_SECONDS = 3
 
 LABEL_COLORS = {
     "sentinel:hold": "d4c5f9", "sentinel:needs-owner": "fbca04", "sentinel:blocked": "b60205",
@@ -32,6 +42,8 @@ class Executor:
     actions: list[Action] = field(default_factory=list)
     would_have: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.time
 
     def allowed(self, needs: str) -> bool:
         """`needs` is the minimum autonomy for the action: 'fix' (push/label/escalate) or 'merge'."""
@@ -134,6 +146,78 @@ class Executor:
 
         self.act("merge", f"merge #{self.pr_number} at {head_sha[:7]} ({method})", run, {"type": "merge"})
         return outcome["status"], outcome["detail"]
+
+    # ---------- repository-wide merge lock ----------
+
+    def _lock_age(self, sha: str) -> float:
+        committed = self.gh.get_git_commit(self.repo, sha).get("committer", {}).get("date")
+        try:
+            when = datetime.fromisoformat(committed.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return float("inf")  # unreadable lock: treat as stale
+        return self.clock() - when
+
+    def acquire_merge_lock(self, tree_sha: str) -> str | None:
+        """The lock commit's SHA once held, or None if another run held it for the whole wait."""
+        now = datetime.fromtimestamp(self.clock(), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        message = f"PR Sentinel merge lock\n\nrun={self.run_id} pr=#{self.pr_number}"
+        mine = self.gh.create_commit(self.repo, message, tree_sha, [])
+        deadline = self.clock() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                self.gh.create_full_ref(self.repo, LOCK_REF, mine)
+                return mine
+            except GitHubError as exc:
+                if exc.status != 422:
+                    raise
+            held = self.gh.get_ref(self.repo, LOCK_REF)
+            if held and self._lock_age(held) > LOCK_TTL_SECONDS:
+                # Stale (its holder crashed). Take it over with a fast-forward: if another run got there first,
+                # the ref no longer points at `held`, the update isn't a fast-forward, and GitHub refuses it.
+                takeover = self.gh.create_commit(self.repo, message + f"\ntook over stale lock {held[:7]} at {now}",
+                                                 tree_sha, [held])
+                try:
+                    self.gh.fast_forward_ref(self.repo, LOCK_REF, takeover)
+                    return takeover
+                except GitHubError as exc:
+                    if exc.status != 422:
+                        raise
+            if self.clock() >= deadline:
+                return None
+            self.sleep(LOCK_POLL_SECONDS)
+
+    def release_merge_lock(self, sha: str) -> None:
+        """Only release our own lock: if a stale-lock takeover replaced it, it isn't ours anymore."""
+        try:
+            if self.gh.get_ref(self.repo, LOCK_REF) == sha:
+                self.gh.delete_ref(self.repo, LOCK_REF)
+        except GitHubError as exc:
+            self.errors.append(f"release merge lock: {exc}")
+
+    def locked_merge(self, *, tree_sha: str, recheck: Callable[[], list[str]], after_merge: Callable[[], None],
+                     **merge_args) -> tuple[str, str | None, list[str]]:
+        """Merge while holding the repository-wide lock: re-check fresh facts under the lock, merge, then run
+        `after_merge` (label, CI dispatch) before releasing. Returns (status, detail, fresh blockers)."""
+        if not self.allowed("merge"):
+            status, detail = self.merge(**merge_args)  # records "would have"
+            return status, detail, []
+        try:
+            lock = self.acquire_merge_lock(tree_sha)
+        except GitHubError as exc:
+            self.errors.append(f"merge lock: {exc}")
+            return "error", str(exc), []
+        if lock is None:
+            return "locked", "another PR Sentinel merge held the lock", []
+        try:
+            blockers = recheck()
+            if blockers:
+                return "blocked", ", ".join(blockers), blockers
+            status, detail = self.merge(**merge_args)
+            if status == "merged":
+                after_merge()
+            return status, detail, []
+        finally:
+            self.release_merge_lock(lock)
 
     def update_branch(self, head_sha: str) -> None:
         self.act("merge", "update the branch from the default branch",

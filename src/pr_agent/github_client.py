@@ -280,3 +280,34 @@ class GitHubClient:
 
     def add_reaction(self, repo: str, comment_id: int, content: str = "eyes") -> None:
         self._request("POST", f"/repos/{repo}/issues/comments/{int(comment_id)}/reactions", json={"content": content})
+
+    # ---------- repository-wide merge lock (a git ref outside refs/heads, so it's not a branch) ----------
+
+    def get_ref(self, repo: str, ref: str) -> str | None:
+        """SHA a ref like `sentinel/merge-lock` points to, or None if it doesn't exist."""
+        try:
+            return self._request("GET", f"/repos/{repo}/git/ref/{quote(ref, safe='/')}").json()["object"]["sha"]
+        except GitHubError as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    def create_full_ref(self, repo: str, ref: str, sha: str) -> None:
+        """Atomic: GitHub answers 422 if the ref already exists."""
+        self._request("POST", f"/repos/{repo}/git/refs", json={"ref": f"refs/{ref}", "sha": sha})
+
+    def fast_forward_ref(self, repo: str, ref: str, sha: str) -> None:
+        """Compare-and-swap: succeeds only if `sha` descends from the ref's current commit (422 otherwise)."""
+        self._request("PATCH", f"/repos/{repo}/git/refs/{quote(ref, safe='/')}", json={"sha": sha, "force": False})
+
+    def delete_ref(self, repo: str, ref: str) -> None:
+        try:
+            self._request("DELETE", f"/repos/{repo}/git/refs/{quote(ref, safe='/')}")
+        except GitHubError as exc:
+            if exc.status not in (404, 422):
+                raise
+
+    def recent_closed_pulls(self, repo: str) -> list[dict]:
+        """The 100 most recently updated closed PRs (consistent, unlike search, which can lag)."""
+        return self._request("GET", f"/repos/{repo}/pulls",
+                             params={"state": "closed", "sort": "updated", "direction": "desc", "per_page": 100}).json()

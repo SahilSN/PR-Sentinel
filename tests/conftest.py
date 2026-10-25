@@ -38,6 +38,10 @@ class FakeGitHub:
         self.pulls_created: list[dict] = []
         self.reactions: list[int] = []
         self.created_labels: set[str] = set()
+        self.commit_objs: dict[str, dict] = {}  # sha -> {"message", "date", "parents"}
+        self.lock_events: list[str] = []  # acquire/takeover/release, in order, interleaved with "merge"
+        self.closed_pulls: list[dict] = list(fixture.get("closed_pulls", []))
+        self.commit_date = "2026-10-24T12:00:00Z"
 
     def raw_pull(self) -> dict:
         f, st = self.fixture, self.fixture.get("pr_state") or {}
@@ -162,16 +166,37 @@ class FakeGitHub:
         if method == "POST" and path == f"/repos/{repo}/pulls/{pr}/requested_reviewers":
             self.reviewers += body["reviewers"]
             return httpx.Response(201, json={})
+        lock = f"/repos/{repo}/git/ref/sentinel/merge-lock"
+        if method == "GET" and path == lock:
+            sha = self.refs.get("refs/sentinel/merge-lock")
+            return httpx.Response(200, json={"object": {"sha": sha}}) if sha else httpx.Response(404, json={})
+        if method == "PATCH" and path == f"/repos/{repo}/git/refs/sentinel/merge-lock":
+            current = self.refs.get("refs/sentinel/merge-lock")
+            if current is None or current not in self.commit_objs.get(body["sha"], {}).get("parents", []):
+                return httpx.Response(422, json={"message": "Update is not a fast forward"})
+            self.refs["refs/sentinel/merge-lock"] = body["sha"]
+            self.lock_events.append("takeover")
+            return httpx.Response(200, json={})
+        if method == "DELETE" and path == f"/repos/{repo}/git/refs/sentinel/merge-lock":
+            self.refs.pop("refs/sentinel/merge-lock", None)
+            self.lock_events.append("release")
+            return httpx.Response(204)
+        if method == "GET" and path == f"/repos/{repo}/pulls" and request.url.params.get("state") == "closed":
+            return httpx.Response(200, json=self.closed_pulls)
         if method == "GET" and path.startswith(f"/repos/{repo}/git/ref/heads/"):
             return httpx.Response(200, json={"object": {"sha": f["head_sha"]}})
         if method == "GET" and path.startswith(f"/repos/{repo}/git/commits/"):
-            return httpx.Response(200, json={"tree": {"sha": "t" * 40}})
+            obj = self.commit_objs.get(path.rsplit("/", 1)[1], {})
+            return httpx.Response(200, json={"tree": {"sha": "t" * 40}, "message": obj.get("message", ""),
+                                             "committer": {"date": obj.get("date", self.commit_date)}})
         if method == "POST" and path == f"/repos/{repo}/git/trees":
             self.trees.append(body)
             return httpx.Response(201, json={"sha": "e" * 40})
         if method == "POST" and path == f"/repos/{repo}/git/commits":
             self.commits_created.append(body)
-            return httpx.Response(201, json={"sha": "c" * 40})
+            sha = "c" * 40 if len(self.commits_created) == 1 else format(len(self.commits_created), "040x")
+            self.commit_objs[sha] = {"message": body["message"], "parents": body["parents"], "date": self.commit_date}
+            return httpx.Response(201, json={"sha": sha})
         if method == "PATCH" and path.startswith(f"/repos/{repo}/git/refs/heads/"):
             if self.ref_conflict:
                 return httpx.Response(422, json={"message": "Update is not a fast forward"})
@@ -179,7 +204,11 @@ class FakeGitHub:
             f["head_sha"] = body["sha"]
             return httpx.Response(200, json={})
         if method == "POST" and path == f"/repos/{repo}/git/refs":
+            if body["ref"] in self.refs:
+                return httpx.Response(422, json={"message": "Reference already exists"})
             self.refs[body["ref"]] = body["sha"]
+            if body["ref"] == "refs/sentinel/merge-lock":
+                self.lock_events.append("acquire")
             return httpx.Response(201, json={})
         if method == "POST" and path.startswith(f"/repos/{repo}/actions/workflows/") and path.endswith("/dispatches"):
             self.dispatches.append({"workflow": path.split("/")[-2], **body})
@@ -188,6 +217,7 @@ class FakeGitHub:
             if self.merge_status:
                 return httpx.Response(self.merge_status, json={"message": "nope"})
             assert body["sha"] == f["head_sha"]
+            self.lock_events.append("merge" if "refs/sentinel/merge-lock" in self.refs else "merge_without_lock")
             self.merged = True
             self.merge_call = body
             return httpx.Response(200, json={"sha": "9" * 40, "merged": True})
